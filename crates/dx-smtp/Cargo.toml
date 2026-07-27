@@ -1,0 +1,33 @@
+[package]
+name = "dx-smtp"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "SMTP email transport via Lettre — pooled sync/async clients with retry, timeouts, and bulk-sender headers"
+
+[features]
+default = []
+# Derive serde on `SmtpSecurity` so it can be persisted in per-tenant settings.
+serde = ["dep:serde"]
+
+[dependencies]
+lettre = { version = "0.11", default-features = false, features = [
+    "builder",
+    "pool",
+    "smtp-transport",
+    "tokio1",
+    "tokio1-rustls-tls",
+    "rustls",
+    "ring",
+    "webpki-roots",
+] }
+secrecy = { workspace = true }
+serde = { version = "1.0", features = ["derive"], optional = true }
+thiserror = { workspace = true }
+tokio = { version = "1", features = ["time"] }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
