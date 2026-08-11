@@ -1,0 +1,9 @@
+/target
+**/*.rs.bk
+.DS_Store
+
+# Local path overrides for developing the kit from inside a consuming app.
+.cargo/config.toml
+
+# Private migration notes — names internal apps, stays out of the public repo.
+EXTRACTION.md
