@@ -1,6 +1,8 @@
 [package]
 name = "dx-auth"
-version.workspace = true
+# Pinned ahead of the workspace version: v0.1.1 folds in the rustls reqwest
+# build that dx-seo and mistral already carried. Tag and manifest must agree.
+version = "0.1.1"
 authors.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -22,7 +24,12 @@ axum = { version = "0.8.8", optional = true }
 tower-sessions = { version = "0.14", default-features = false, features = [
     "axum-core",
 ], optional = true }
-reqwest = { version = "0.13.1", features = [
+# rustls, not the default native-tls: it keeps the build off OpenSSL, which
+# matters for the slim Debian runtime images these apps deploy into. dx-seo and
+# mistral had already made this change in their own copies; folding it in here
+# is what stops the kit regressing them.
+reqwest = { version = "0.13.1", default-features = false, features = [
+    "rustls",
     "json",
     "query",
     "form",
