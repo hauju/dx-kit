@@ -8,7 +8,7 @@ own copy, so a fix lands once instead of once per app.
 |---|---|
 | [`dx-crypto`](crates/dx-crypto) | secure random, Argon2 hashing, SHA-256 lookup hashes, API-key / CSRF / invitation tokens, PKCE `S256`, AES-256-GCM at rest |
 | [`dx-smtp`](crates/dx-smtp) | Lettre-backed SMTP — pooled sync/async clients with retry and timeouts, plus a one-shot per-tenant sender |
-| [`dx-auth`](crates/dx-auth) | FerrisKey OIDC, custom login UI (passkey / password / email-OTP), sessions, CSRF, and rate limiting |
+| [`dx-auth`](crates/dx-auth) | FerrisKey OIDC, custom login UI (passkey / password / email-OTP), sessions, CSRF, rate limiting, and an optional self-owned WebAuthn Relying Party |
 
 All are storage-agnostic: no database dependency, no ORM types in any public
 signature. `dx-auth` reaches storage through the `AuthUserStore`,
@@ -23,11 +23,16 @@ Depend on a tag, not a branch — the tag *is* the version:
 [dependencies]
 dx-crypto = { git = "https://github.com/hauju/dx-kit.git", tag = "dx-crypto-v0.1.0" }
 dx-smtp   = { git = "https://github.com/hauju/dx-kit.git", tag = "dx-smtp-v0.1.0" }
-dx-auth   = { git = "https://github.com/hauju/dx-kit.git", tag = "dx-auth-v0.1.0" }
+dx-auth   = { git = "https://github.com/hauju/dx-kit.git", tag = "dx-auth-v0.2.0" }
 ```
 
 `dx-auth` has no default features. Enable `server`, `web`, or both — apps
-normally propagate both, and that union is what CI gates on.
+normally propagate both. Add `passkey-rp` to act as your own WebAuthn Relying
+Party (see the design note below); it implies `server`.
+
+CI checks each combination a real app ships, not just `--all-features`: an
+optional feature is a configuration someone builds, and a misplaced `cfg` breaks
+only that one.
 
 If your app already has hundreds of `crypto::` / `smtp::` call sites, rename at
 the dependency instead of touching them all:
@@ -133,16 +138,36 @@ cadence and dx-blog. Each decision:
   configured, because a shared crate must not require an external service to be
   usable.
 
-**Deliberately not in v0.1.0: the self-owned WebAuthn Relying Party.** seggwat
-and dx-admin both run their own RP (`webauthn.rs` + `handlers/passkey_enroll.rs`)
-rather than proxying passkeys through FerrisKey, because FerrisKey derives its RP
-ID from the IdP's origin and its enrollment needs a user JWT that email-OTP
-accounts can never obtain. Those two implementations are **842 lines with 2 lines
-of difference**, and `passkey_enroll.rs` / `webauthn_helpers.rs` are byte-identical
-— so this is already the next duplication to kill. It belongs behind a
-`passkey-rp` feature in v0.2.0, not bolted onto v0.1.0: it is the seam between
-"FerrisKey is the IdP" and "this app is its own IdP", and that seam wants
-designing rather than discovering.
+#### The `passkey-rp` feature (v0.2.0)
+
+Makes the app its own WebAuthn Relying Party: it runs the ceremonies and stores
+credentials itself instead of proxying passkeys through the identity provider.
+
+Needed because FerrisKey derives its RP ID from the IdP deployment's own origin,
+which pins credentials there, and its enrollment endpoints require a FerrisKey
+user JWT that email-OTP accounts can never obtain. An app whose accounts are
+created by OTP therefore cannot offer passkeys at all through the IdP.
+
+- **Additive, not an alternative.** seggwat runs its own RP *alongside* FerrisKey
+  login — it has both `ferriskey/` and `webauthn.rs`. Enabling the feature does
+  not commit you to dropping the IdP.
+- **Scope is the RP core, not the login flow.** `webauthn.rs` imports nothing
+  from the rest of the crate — options, registration and assertion verification
+  are pure protocol code, which is why it can be shared without dragging session
+  handling along. `session_auth.rs` differs by ~1,200 lines between the FerrisKey
+  and self-owned architectures and is deliberately **not** part of this feature.
+- **Off costs nothing.** `AuthState.passkey_store` and the two enroll routes only
+  exist under the feature, so apps that leave it off compile unchanged and never
+  link `ring` or `ciborium`.
+- **Reconciled from seggwat and dx-admin**, whose copies were 842 lines apart by
+  2 — a `seggwat_crypto::` vs `crypto::` rename. `passkey_enroll.rs` and
+  `webauthn_helpers.rs` were byte-identical. dx-admin's trait docs won (they
+  explain the sign-counter no-regress check and the `user_id` scoping that stops
+  one user deleting another's credential); the browser globals were normalised
+  from `window.__seggwat_*` to `window.__auth_*`, which dx-admin had inherited
+  verbatim.
+- **Brings the crate's only protocol tests** — 7 in `webauthn.rs`, covering RP-ID
+  derivation and the verification paths.
 
 The login page's hydration-stall notice expects a `.hydration-stall` CSS class
 in the host app's stylesheet — a delayed reveal, since if the bundle never

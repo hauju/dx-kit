@@ -48,6 +48,76 @@ pub trait AuthUserStore: Send + Sync + 'static {
     }
 }
 
+/// A stored WebAuthn credential, as the login and enrollment handlers need it.
+#[cfg(feature = "passkey-rp")]
+#[derive(Debug, Clone)]
+pub struct StoredPasskey {
+    /// Store row id, used for delete.
+    pub id: String,
+    /// Owning user id (`AuthUser.id`).
+    pub user_id: String,
+    /// base64url credential id chosen by the authenticator.
+    pub credential_id: String,
+    /// COSE public key bytes captured at registration.
+    pub public_key_cose: Vec<u8>,
+    pub sign_count: i64,
+    pub transports: Vec<String>,
+    pub name: String,
+}
+
+/// A freshly verified registration to persist.
+#[cfg(feature = "passkey-rp")]
+#[derive(Debug, Clone)]
+pub struct NewPasskey {
+    pub credential_id: String,
+    pub public_key_cose: Vec<u8>,
+    pub sign_count: i64,
+    pub transports: Vec<String>,
+    pub name: String,
+    pub backed_up: bool,
+}
+
+/// Passkey (WebAuthn credential) persistence, for apps that act as their own
+/// Relying Party.
+///
+/// The alternative is proxying passkeys through the identity provider, but
+/// FerrisKey derives its RP ID from the IdP deployment's own origin — which
+/// pins credentials to that origin — and its enrollment endpoints require a
+/// FerrisKey user JWT that email-OTP accounts can never obtain. Apps that need
+/// passkeys for OTP-created accounts therefore run the ceremonies themselves,
+/// and the credentials live in their own database behind this trait.
+#[cfg(feature = "passkey-rp")]
+#[async_trait::async_trait]
+pub trait AuthPasskeyStore: Send + Sync + 'static {
+    /// All passkeys registered by a user.
+    async fn list_passkeys(&self, user_id: &str) -> AuthResult<Vec<StoredPasskey>>;
+
+    /// Look up a passkey by its authenticator credential id. The login path's
+    /// entry point: an assertion identifies itself by credential id alone.
+    async fn find_passkey_by_credential_id(
+        &self,
+        credential_id: &str,
+    ) -> AuthResult<Option<StoredPasskey>>;
+
+    /// Persist a newly registered passkey for a user.
+    async fn insert_passkey(&self, user_id: &str, passkey: NewPasskey) -> AuthResult<()>;
+
+    /// Record a successful authentication: signature counter, backup state and
+    /// last-used time. The counter must be written back for the no-regress
+    /// check on the next assertion to mean anything.
+    async fn touch_passkey(
+        &self,
+        credential_id: &str,
+        sign_count: i64,
+        backed_up: bool,
+    ) -> AuthResult<()>;
+
+    /// Delete one of the user's passkeys. Scoped by `user_id` so a caller
+    /// cannot delete someone else's credential by guessing a row id. Returns
+    /// whether a row was actually deleted.
+    async fn delete_passkey(&self, user_id: &str, passkey_id: &str) -> AuthResult<bool>;
+}
+
 /// Sends verification emails (OTP codes).
 ///
 /// Implemented by the dashboard to wrap SMTP/email service.

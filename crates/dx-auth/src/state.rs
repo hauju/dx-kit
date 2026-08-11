@@ -20,4 +20,13 @@ pub struct AuthState {
     /// in-process limiter, which under-counts across replicas — see
     /// [`AuthRateLimitStore`].
     pub rate_limit_store: Option<Arc<dyn AuthRateLimitStore>>,
+    /// WebAuthn credentials, when this app is its own Relying Party.
+    ///
+    /// Required rather than optional: the field only exists under the
+    /// `passkey-rp` feature, so enabling the feature without wiring a store
+    /// would mount enrollment routes with nothing behind them. Apps that leave
+    /// the feature off never see this field, which is why adding it is not a
+    /// breaking change for them.
+    #[cfg(feature = "passkey-rp")]
+    pub passkey_store: Arc<dyn crate::traits::AuthPasskeyStore>,
 }

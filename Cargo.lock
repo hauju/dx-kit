@@ -1513,13 +1513,14 @@ checksum = "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813"
 
 [[package]]
 name = "dx-auth"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "axum",
  "base64 0.22.1",
  "captcha-rs",
  "chrono",
+ "ciborium",
  "dioxus",
  "dx-crypto",
  "gloo-timers",
@@ -1527,6 +1528,7 @@ dependencies = [
  "js-sys",
  "jsonwebtoken",
  "reqwest 0.13.4",
+ "ring",
  "serde",
  "serde-wasm-bindgen",
  "serde_json",
