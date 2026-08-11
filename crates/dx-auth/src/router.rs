@@ -63,6 +63,20 @@ pub fn auth_router(auth_config: AuthConfig, auth_state: AuthState) -> Router {
             post(handlers::accept_tos_handler),
         );
 
+    // Passkey enrollment, for apps that are their own Relying Party. Both are
+    // session-authenticated: you enroll a passkey onto an account you are
+    // already logged into, so there is no unauthenticated entry point here.
+    #[cfg(feature = "passkey-rp")]
+    let router = router
+        .route(
+            "/auth/passkey/enroll/options",
+            post(handlers::passkey_enroll_options),
+        )
+        .route(
+            "/auth/passkey/enroll/verify",
+            post(handlers::passkey_enroll_verify),
+        );
+
     // Development-only login bypass (see handlers::dev_login). Compiled out of
     // release builds; also requires DEV_LOGIN=true at runtime.
     #[cfg(debug_assertions)]

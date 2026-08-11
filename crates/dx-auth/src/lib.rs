@@ -26,6 +26,9 @@ pub use state::AuthState;
 #[cfg(feature = "server")]
 pub use traits::{AuthEmailSender, AuthRateLimitStore, AuthUserStore};
 
+#[cfg(feature = "passkey-rp")]
+pub use traits::{AuthPasskeyStore, NewPasskey, StoredPasskey};
+
 #[cfg(feature = "server")]
 pub mod jwt;
 
@@ -46,6 +49,14 @@ pub mod csrf;
 
 #[cfg(feature = "server")]
 pub mod rate_limit;
+
+/// WebAuthn Relying Party — ceremony options, and registration/assertion
+/// verification against the app's own credential store.
+///
+/// Standalone by construction: this module imports nothing from the rest of the
+/// crate, so it can be reasoned about (and tested) as pure protocol code.
+#[cfg(feature = "passkey-rp")]
+pub mod webauthn;
 #[cfg(feature = "server")]
 pub use rate_limit::AUTH_REQUESTS_PER_MINUTE;
 

@@ -1,8 +1,8 @@
 [package]
 name = "dx-auth"
-# Pinned ahead of the workspace version: v0.1.1 folds in the rustls reqwest
-# build that dx-seo and mistral already carried. Tag and manifest must agree.
-version = "0.1.1"
+# Pinned ahead of the workspace version; tag and manifest must agree.
+# 0.1.1 folded in the rustls reqwest build. 0.2.0 adds the passkey-rp feature.
+version = "0.2.0"
 authors.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -47,6 +47,13 @@ chrono = { version = "0.4.43", default-features = false, features = [
 url = { version = "2.5", optional = true }
 captcha-rs = { version = "0.5", optional = true }
 
+# WebAuthn Relying Party (`passkey-rp`). `ring` verifies assertion signatures
+# (ES256 / EdDSA / RS256); `ciborium` decodes the COSE key and the CBOR
+# attestation object. Both are optional so apps that federate passkeys through
+# the IdP never link them.
+ring = { version = "0.17", optional = true }
+ciborium = { version = "0.2", optional = true }
+
 # Web dependencies (login page component)
 dioxus = { version = "0.7.9", features = ["fullstack", "lib"], optional = true }
 web-sys = { version = "0.3", optional = true, features = [
@@ -82,6 +89,14 @@ server = [
     "dep:sha2",
     "dep:base64",
 ]
+# This app is its own WebAuthn Relying Party: it runs the ceremonies and stores
+# credentials itself, rather than proxying passkeys through the identity
+# provider. Needed when accounts can be created by email OTP, since those have
+# no IdP user JWT and so can never enroll through the IdP's own endpoints.
+#
+# Additive, not an alternative: seggwat runs this alongside FerrisKey login.
+# Requires `server`, and an `AuthPasskeyStore` on `AuthState`.
+passkey-rp = ["server", "dep:ring", "dep:ciborium"]
 web = [
     "dep:dioxus",
     "dep:web-sys",

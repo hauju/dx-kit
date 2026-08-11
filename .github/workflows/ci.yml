@@ -20,3 +20,13 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - run: cargo test --workspace --all-features
+
+      # --all-features only proves the maximal build. Every optional feature is
+      # also a configuration some app actually ships, and a misplaced `cfg` breaks
+      # exactly those and nothing else. Check the combinations real consumers use.
+      - name: dx-auth without passkey-rp (what the six FerrisKey apps build)
+        run: cargo clippy -p dx-auth --features server,web --all-targets -- -D warnings
+      - name: dx-auth with passkey-rp
+        run: cargo clippy -p dx-auth --features passkey-rp,web --all-targets -- -D warnings
+      - name: dx-auth server-only (no web)
+        run: cargo check -p dx-auth --features server
