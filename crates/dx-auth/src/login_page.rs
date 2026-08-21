@@ -13,6 +13,13 @@ pub fn LoginPage(
     /// custom-styled container.
     #[props(default = false)]
     embed: bool,
+    /// Bollwark captcha widget: `(server_url, site_key)`. When set, new-user
+    /// registration is gated by the widget pre-solving invisibly inside the
+    /// email form, instead of the image CAPTCHA. Pass the same values the
+    /// server reads from `CAPTCHA_URL` / `CAPTCHA_SITE_KEY`; both are public
+    /// by design.
+    #[props(default)]
+    captcha_config: Option<(String, String)>,
 ) -> Element {
     // Check if we arrived needing TOS acceptance
     let initial_step = if redirect_url.contains("accept_tos=true") {
@@ -44,6 +51,38 @@ pub fn LoginPage(
     // CAPTCHA state for new user registration
     let mut captcha_image = use_signal(|| None::<String>);
     let mut captcha_answer = use_signal(String::new);
+
+    // Pre-solve the bollwark widget invisibly while the user is on the
+    // email-entry step. The widget is mounted inside the email <form> (see the
+    // EmailInput render branch) so it captures real interaction and writes its
+    // token into a hidden `captcha-token` input by the time the user submits.
+    // Script tag and `data-sitekey` container can land in either order, so
+    // poll briefly for both, then ask the (idempotent) autoInit.
+    #[cfg(feature = "web")]
+    let has_captcha_widget = captcha_config.is_some();
+    #[cfg(feature = "web")]
+    use_effect(use_reactive!(|step| {
+        if !matches!(step(), LoginStep::EmailInput) || !has_captcha_widget {
+            return;
+        }
+        let _ = js_sys::eval(
+            r#"(function() {
+                let tries = 0;
+                const id = setInterval(() => {
+                    tries++;
+                    const hasRuntime = window.Bollwark && window.Bollwark.scan;
+                    const hasContainer = document.querySelector('#bollwark-container[data-sitekey]');
+                    if (hasRuntime && hasContainer) {
+                        window.Bollwark.scan();
+                        clearInterval(id);
+                    } else if (tries > 100) {
+                        clearInterval(id);
+                        console.warn('[dx-auth] captcha widget failed to mount within 5s');
+                    }
+                }, 50);
+            })();"#,
+        );
+    }));
 
     // Trigger for App to re-fetch user data after login (avoids full page reload)
     let mut user_refresh: Signal<UserDataRefreshTrigger> = use_context();
@@ -84,6 +123,7 @@ pub fn LoginPage(
             is_loading,
             passkey_options,
             captcha_image,
+            has_captcha_widget,
             user_refresh,
         );
     };
@@ -439,6 +479,26 @@ pub fn LoginPage(
                                         autofocus: true,
                                         value: "{email}",
                                         oninput: move |e| email.set(e.value()),
+                                    }
+                                }
+                                // Bollwark widget, pre-solving while the user
+                                // types. It injects its hidden `captcha-token`
+                                // input into this <form>, so the token is ready
+                                // by submit time and the new-user flow forwards
+                                // it without an extra screen. `invisible` mode
+                                // renders no chrome for low-risk visitors; an
+                                // escalated tier auto-renders a checkbox.
+                                if let Some((server_url, site_key)) = captcha_config.clone() {
+                                    document::Script {
+                                        src: "{server_url}/v1/widget.js",
+                                        defer: true,
+                                    }
+                                    div {
+                                        id: "bollwark-container",
+                                        class: "flex justify-center",
+                                        "data-sitekey": "{site_key}",
+                                        "data-server-url": "{server_url}",
+                                        "data-mode": "invisible",
                                     }
                                 }
                                 button {
@@ -799,6 +859,99 @@ enum LoginStep {
     Success { redirect_url: String },
 }
 
+// ── Bollwark widget helpers ─────────────────────────────────────────
+
+/// Reads the bollwark widget's hidden `captcha-token` input from the DOM
+/// verbatim. The value is an opaque token — it is forwarded as-is to the
+/// server (which forwards it to `/v1/verify`) and never parsed. Returns
+/// `None` when the widget hasn't produced a token yet.
+#[cfg(feature = "web")]
+fn read_captcha_token_from_dom() -> Option<String> {
+    let raw = js_sys::eval(
+        r#"(() => {
+            const el = document.querySelector('input[name="captcha-token"]');
+            return el ? el.value : "";
+        })()"#,
+    )
+    .ok()?
+    .as_string()?;
+    if raw.is_empty() {
+        return None;
+    }
+    Some(raw)
+}
+
+/// Complete the new-user captcha flow from the email step. The widget has been
+/// pre-solving invisibly inside the email form; poll for its token (up to
+/// ~12s), forward it to the server, and on success advance to OTP entry. The
+/// step stays on EmailInput so a rejection or timeout lets the user simply
+/// resubmit while the widget keeps solving.
+#[cfg(feature = "web")]
+async fn complete_captcha_flow(
+    mut step: Signal<LoginStep>,
+    mut error_msg: Signal<Option<String>>,
+    mut is_loading: Signal<bool>,
+) {
+    // Poll for the solved token (~60 tries × 200ms ≈ 12s). It is normally
+    // already present by the time the user finishes typing and submitting.
+    let mut token = None;
+    for _ in 0..60 {
+        if let Some(t) = read_captcha_token_from_dom() {
+            token = Some(t);
+            break;
+        }
+        gloo_timers::future::TimeoutFuture::new(200).await;
+    }
+
+    let Some(token) = token else {
+        error_msg.set(Some(
+            "Verification is still loading. Please wait a moment and try again.".to_string(),
+        ));
+        is_loading.set(false);
+        return;
+    };
+
+    let result: std::result::Result<CaptchaVerifyResp, String> = wasm_post_json(
+        "/auth/session/captcha/verify",
+        Some(serde_json::json!({ "captcha_token": token })),
+    )
+    .await;
+    match result {
+        Ok(resp) if resp.success => {
+            error_msg.set(None);
+            step.set(LoginStep::OtpCodeInput);
+            is_loading.set(false);
+        }
+        Ok(resp) => {
+            error_msg.set(Some(
+                resp.error
+                    .unwrap_or_else(|| "Verification failed".to_string()),
+            ));
+            reset_captcha_widget();
+            is_loading.set(false);
+        }
+        Err(e) => {
+            error_msg.set(Some(e));
+            reset_captcha_widget();
+            is_loading.set(false);
+        }
+    }
+}
+
+/// Clear the stale captcha token and reset the widget so it produces a fresh
+/// puzzle (and auto-solves it) for the next submit attempt.
+#[cfg(feature = "web")]
+fn reset_captcha_widget() {
+    let _ = js_sys::eval(
+        r#"(function() {
+            const el = document.querySelector('input[name="captcha-token"]');
+            if (el) el.value = "";
+            const a = window.Bollwark && window.Bollwark._instances;
+            if (a) a.forEach((w) => w.reset());
+        })();"#,
+    );
+}
+
 // ── WASM HTTP helpers ───────────────────────────────────────────────
 
 #[cfg(feature = "web")]
@@ -916,6 +1069,7 @@ fn start_session_flow(
     mut is_loading: Signal<bool>,
     mut passkey_options: Signal<Option<String>>,
     mut captcha_image: Signal<Option<String>>,
+    captcha_widget: bool,
     user_refresh: Signal<UserDataRefreshTrigger>,
 ) {
     spawn(async move {
@@ -935,10 +1089,19 @@ fn start_session_flow(
                 has_password.set(resp.has_password);
 
                 if resp.captcha_required == Some(true) {
-                    // New user → CAPTCHA required before OTP
-                    captcha_image.set(resp.captcha_image);
-                    step.set(LoginStep::CaptchaChallenge);
-                    is_loading.set(false);
+                    if captcha_widget {
+                        // The bollwark widget has been pre-solving inside the
+                        // email form; forward its token. Stay on EmailInput so
+                        // a rejection or timeout lets the user simply resubmit
+                        // while the widget keeps solving.
+                        step.set(LoginStep::EmailInput);
+                        complete_captcha_flow(step, error_msg, is_loading).await;
+                    } else {
+                        // New user → image CAPTCHA required before OTP
+                        captcha_image.set(resp.captcha_image);
+                        step.set(LoginStep::CaptchaChallenge);
+                        is_loading.set(false);
+                    }
                 } else if let Some(pk_opts) = resp.public_key_options {
                     // Server detected passkeys → auto-trigger WebAuthn
                     passkey_options.set(Some(pk_opts.to_string()));

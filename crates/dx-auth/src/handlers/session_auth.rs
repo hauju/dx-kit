@@ -70,6 +70,76 @@ const CAPTCHA_EXPIRY_SECONDS: i64 = 300;
 const PASSWORD_ATTEMPTS_KEY: &str = "password.attempts";
 const MAX_PASSWORD_ATTEMPTS: u32 = 5;
 
+// ── Bollwark captcha (optional, env-configured) ─────────────────────
+//
+// When all three vars are set, new-user registration is gated by the bollwark
+// widget instead of the built-in image CAPTCHA: the login page pre-solves the
+// widget invisibly inside the email form and forwards its token, which we
+// verify server-to-server. Absent or partial config falls back to the image
+// CAPTCHA, so local dev needs no captcha deployment.
+
+struct CaptchaCfg {
+    server_url: String,
+    site_key: String,
+    secret_key: String,
+}
+
+fn captcha_cfg() -> Option<CaptchaCfg> {
+    let env = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
+    Some(CaptchaCfg {
+        server_url: env("CAPTCHA_URL")?,
+        site_key: env("CAPTCHA_SITE_KEY")?,
+        secret_key: env("CAPTCHA_SECRET_KEY")?,
+    })
+}
+
+/// Pooled client for the verify call; the timeout caps how long an unreachable
+/// captcha server can stall a registration submit.
+fn captcha_client() -> &'static reqwest::Client {
+    use std::sync::OnceLock;
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(5))
+            .build()
+            .expect("captcha verify client")
+    })
+}
+
+/// Forward the widget token to bollwark's `POST /v1/verify`.
+///
+/// Returns `Ok(true)` on a verified pass, `Ok(false)` on an explicit
+/// rejection, and `Err` when the captcha server is unreachable. Registration
+/// is fail-closed: the caller blocks on both `false` and `Err`.
+async fn verify_captcha_token(cfg: &CaptchaCfg, token: &str) -> AuthResult<bool> {
+    let resp = captcha_client()
+        .post(format!(
+            "{}/v1/verify",
+            cfg.server_url.trim_end_matches('/')
+        ))
+        .bearer_auth(&cfg.secret_key)
+        .json(&serde_json::json!({ "token": token }))
+        .send()
+        .await
+        .map_err(|e| {
+            warn!(error = ?e, "captcha verify request failed");
+            AuthError::ServerStateError("captcha verify request failed".to_string())
+        })?;
+
+    let status = resp.status();
+    let body: serde_json::Value = resp.json().await.unwrap_or(serde_json::Value::Null);
+    let success = body
+        .get("success")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    if !status.is_success() || !success {
+        warn!(status = %status, "captcha verify rejected");
+        return Ok(false);
+    }
+    Ok(true)
+}
+
 // ── Request / Response types ────────────────────────────────────────
 
 #[derive(Deserialize)]
@@ -96,6 +166,13 @@ pub struct StartSessionResponse {
     pub captcha_required: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub captcha_image: Option<String>,
+    /// Set (with `captcha_site_key`) when the gate is the bollwark widget
+    /// rather than the image CAPTCHA. The login page uses them to mount the
+    /// widget; both values are public by design.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub captcha_server_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub captcha_site_key: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -110,7 +187,12 @@ pub struct VerifyOtpRequest {
 
 #[derive(Deserialize)]
 pub struct VerifyCaptchaRequest {
+    /// The image-CAPTCHA answer. Unused in bollwark mode.
+    #[serde(default)]
     pub answer: String,
+    /// The bollwark widget's opaque token. Required in bollwark mode.
+    #[serde(default)]
+    pub captcha_token: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -472,6 +554,8 @@ pub async fn start_session(
                         redirect_url: None,
                         captcha_required: None,
                         captcha_image: None,
+                        captcha_server_url: None,
+                        captcha_site_key: None,
                     }));
                 }
                 Err(e) => {
@@ -498,6 +582,8 @@ pub async fn start_session(
                 redirect_url: None,
                 captcha_required: None,
                 captcha_image: None,
+                captcha_server_url: None,
+                captcha_site_key: None,
             }));
         }
 
@@ -524,6 +610,26 @@ pub async fn start_session(
         );
         session.insert(DEFERRED_NEW_USER_KEY, true).await?;
 
+        // Bollwark configured: the widget in the email form has been
+        // pre-solving already; tell the page to forward its token. No
+        // server-side state to stash — the token is the whole proof.
+        if let Some(cfg) = captcha_cfg() {
+            return Ok(Json(StartSessionResponse {
+                session_id: String::new(),
+                public_key_options: None,
+                otp_sent: false,
+                is_new_user: true,
+                has_passkeys: false,
+                has_password: false,
+                needs_tos_acceptance: None,
+                redirect_url: None,
+                captcha_required: Some(true),
+                captcha_image: None,
+                captcha_server_url: Some(cfg.server_url),
+                captcha_site_key: Some(cfg.site_key),
+            }));
+        }
+
         let image = generate_captcha(&session).await?;
 
         Ok(Json(StartSessionResponse {
@@ -537,6 +643,8 @@ pub async fn start_session(
             redirect_url: None,
             captcha_required: Some(true),
             captcha_image: Some(image),
+            captcha_server_url: None,
+            captcha_site_key: None,
         }))
     }
 }
@@ -565,6 +673,8 @@ async fn send_otp_session(
         redirect_url: None,
         captcha_required: None,
         captcha_image: None,
+        captcha_server_url: None,
+        captcha_site_key: None,
     }))
 }
 
@@ -913,6 +1023,41 @@ pub async fn verify_captcha_handler(
         return Err(AuthError::BadRequest(
             "No pending registration session".to_string(),
         ));
+    }
+
+    // Bollwark mode: the proof is the widget token, verified server-to-server.
+    // Fail-closed — a missing token, a rejection, and an unreachable captcha
+    // server all block registration.
+    if let Some(cfg) = captcha_cfg() {
+        let Some(token) = req.captcha_token.as_deref().filter(|t| !t.is_empty()) else {
+            return Ok(Json(CaptchaVerifyResponse {
+                success: false,
+                otp_sent: false,
+                error: Some("Verification token missing. Please try again.".to_string()),
+            }));
+        };
+        if !verify_captcha_token(&cfg, token).await? {
+            return Ok(Json(CaptchaVerifyResponse {
+                success: false,
+                otp_sent: false,
+                error: Some("Verification failed. Please try again.".to_string()),
+            }));
+        }
+
+        let email = session
+            .get::<String>(LOGIN_EMAIL_KEY)
+            .await?
+            .ok_or_else(|| AuthError::ServerStateError("Missing login email".to_string()))?;
+
+        generate_and_send_otp(&auth_state, &session, &email, "login").await?;
+
+        info!("Bollwark captcha verified, OTP sent to new user: {}", email);
+
+        return Ok(Json(CaptchaVerifyResponse {
+            success: true,
+            otp_sent: true,
+            error: None,
+        }));
     }
 
     let stored_answer = session
