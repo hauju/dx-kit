@@ -8,6 +8,11 @@ use dioxus::prelude::*;
 pub fn LoginPage(
     redirect_url: String,
     #[props(default)] on_success: EventHandler<String>,
+    /// Fired alongside `on_success` when the completed flow created a new
+    /// account (registration) rather than signing in an existing user — e.g.
+    /// for a `signup` analytics event.
+    #[props(default)]
+    on_signup: EventHandler<()>,
     /// When true, renders only the form content without the full-page wrapper,
     /// card, and built-in header. Use this to embed the login form into a
     /// custom-styled container.
@@ -92,6 +97,11 @@ pub fn LoginPage(
     // resource chain (trigger → server fetch → auth state update → effect).
     use_effect(move || {
         if let LoginStep::Success { redirect_url } = step() {
+            // peek: is_new_user is settled before Success and must not
+            // re-trigger this effect.
+            if *is_new_user.peek() {
+                on_signup.call(());
+            }
             on_success.call(redirect_url);
         }
     });

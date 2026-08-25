@@ -4,7 +4,9 @@ name = "dx-auth"
 # 0.1.1 folded in the rustls reqwest build. 0.2.0 adds the passkey-rp feature.
 # 0.2.1 adds the env-configured bollwark captcha (CAPTCHA_URL / _SITE_KEY /
 # _SECRET_KEY), which replaces the image CAPTCHA for new users when set.
-version = "0.2.1"
+# 0.2.2 adds the optional `on_signup` callback on `LoginPage`, fired alongside
+# `on_success` when the flow registered a new account (for signup analytics).
+version = "0.2.2"
 authors.workspace = true
 edition.workspace = true
 license.workspace = true
