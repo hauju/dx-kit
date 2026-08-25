@@ -36,38 +36,62 @@ pub struct AuthRateLimiter {
     inner: Arc<KeyedLimiter>,
 }
 
+/// How often idle per-IP buckets are reclaimed. Governor's keyed store never shrinks on its own,
+/// so without this every client IP the process has ever seen occupies an entry until restart.
+const KEY_SWEEP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(300);
+
 impl AuthRateLimiter {
     /// Create a new rate limiter allowing `per_minute` requests per IP per minute.
     pub fn new(per_minute: u32) -> Self {
         let quota = Quota::per_minute(NonZeroU32::new(per_minute).expect("per_minute must be > 0"));
-        Self {
-            inner: Arc::new(RateLimiter::keyed(quota)),
-        }
+        let inner = Arc::new(RateLimiter::keyed(quota));
+
+        // The task holds a Weak, so it stops on its own once the limiter is dropped.
+        let weak = Arc::downgrade(&inner);
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(KEY_SWEEP_INTERVAL);
+            loop {
+                ticker.tick().await;
+                match weak.upgrade() {
+                    Some(limiter) => limiter.retain_recent(),
+                    None => return,
+                }
+            }
+        });
+
+        Self { inner }
     }
 }
 
 /// Extract the client IP address from common reverse-proxy headers.
 ///
-/// Checks (in order): `X-Forwarded-For`, `X-Real-IP`, `Forwarded`.
+/// Checks (in order): `X-Forwarded-For`, `X-Real-IP`, `Forwarded`. In the list-valued headers,
+/// always the **last** entry — the one appended by the trusted proxy directly in front of us.
+/// Everything before it arrived inside the client's own request; taking the first entry would
+/// let a client mint a fresh rate-limit bucket per request with `X-Forwarded-For: <random>`,
+/// which on these routes means unlimited OTP and CAPTCHA attempts.
 fn forwarded_client_ip(headers: &axum::http::HeaderMap) -> Option<IpAddr> {
-    // X-Forwarded-For: client, proxy1, proxy2 — take the first (leftmost)
+    // X-Forwarded-For: client, proxy1, proxy2 — the rightmost is what our proxy appended.
     if let Some(xff) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok())
-        && let Some(first) = xff.split(',').next()
-        && let Some(ip) = parse_ip(first)
+        && let Some(last) = xff.split(',').next_back()
+        && let Some(ip) = parse_ip(last)
     {
         return Some(ip);
     }
 
-    // X-Real-IP: single IP
+    // X-Real-IP: single IP, set (not appended) by the proxy itself.
     if let Some(real_ip) = headers.get("x-real-ip").and_then(|v| v.to_str().ok())
         && let Some(ip) = parse_ip(real_ip)
     {
         return Some(ip);
     }
 
-    // Forwarded: for=192.0.2.60;proto=http;by=203.0.113.43
-    if let Some(fwd) = headers.get("forwarded").and_then(|v| v.to_str().ok()) {
-        for part in fwd.split(';') {
+    // Forwarded: for=192.0.2.60;proto=http, for=203.0.113.43 — elements are comma-separated,
+    // one per hop in order, so the trustworthy element is again the last.
+    if let Some(fwd) = headers.get("forwarded").and_then(|v| v.to_str().ok())
+        && let Some(element) = fwd.split(',').next_back()
+    {
+        for part in element.split(';') {
             let part = part.trim();
             if let Some(ip) = part.strip_prefix("for=")
                 && let Some(ip) = parse_ip(ip)
@@ -190,6 +214,28 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert("forwarded", "for=\"198.51.100.9:443\"".parse().unwrap());
 
+        assert_eq!(
+            forwarded_client_ip(&headers),
+            Some("198.51.100.9".parse().unwrap())
+        );
+    }
+
+    #[test]
+    fn a_client_cannot_choose_its_ip_by_prepending_hops() {
+        // The proxy appends the address it saw; whatever the client put in front of it must
+        // not become the rate-limit identity — that would be unlimited OTP attempts.
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-for", "1.2.3.4, 198.51.100.9".parse().unwrap());
+        assert_eq!(
+            forwarded_client_ip(&headers),
+            Some("198.51.100.9".parse().unwrap())
+        );
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "forwarded",
+            "for=1.2.3.4, for=198.51.100.9".parse().unwrap(),
+        );
         assert_eq!(
             forwarded_client_ip(&headers),
             Some("198.51.100.9".parse().unwrap())
