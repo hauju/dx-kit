@@ -9,6 +9,7 @@ own copy, so a fix lands once instead of once per app.
 | [`dx-crypto`](crates/dx-crypto) | secure random, Argon2 hashing, SHA-256 lookup hashes, API-key / CSRF / invitation tokens, PKCE `S256`, AES-256-GCM at rest |
 | [`dx-smtp`](crates/dx-smtp) | Lettre-backed SMTP — pooled sync/async clients with retry and timeouts, plus a one-shot per-tenant sender |
 | [`dx-auth`](crates/dx-auth) | FerrisKey OIDC, custom login UI (passkey / password / email-OTP), sessions, CSRF, rate limiting, and an optional self-owned WebAuthn Relying Party |
+| [`dx-umami`](crates/dx-umami) | self-hosted Umami analytics — same-origin tracker proxy (ad-blocker bypass, forwards `X-Forwarded-For` so countries survive), client event bridge with numeric revenue props, session identify, script mount |
 
 All are storage-agnostic: no database dependency, no ORM types in any public
 signature. `dx-auth` reaches storage through the `AuthUserStore`,
@@ -24,11 +25,18 @@ Depend on a tag, not a branch — the tag *is* the version:
 dx-crypto = { git = "https://github.com/hauju/dx-kit.git", tag = "dx-crypto-v0.1.0" }
 dx-smtp   = { git = "https://github.com/hauju/dx-kit.git", tag = "dx-smtp-v0.1.0" }
 dx-auth   = { git = "https://github.com/hauju/dx-kit.git", tag = "dx-auth-v0.2.0" }
+dx-umami  = { git = "https://github.com/hauju/dx-kit.git", tag = "dx-umami-v0.1.0" }
 ```
 
 `dx-auth` has no default features. Enable `server`, `web`, or both — apps
 normally propagate both. Add `passkey-rp` to act as your own WebAuthn Relying
 Party (see the design note below); it implies `server`.
+
+`dx-umami` has one feature, `server` (the axum proxy routes); the client bridge
+is target-gated instead of feature-gated, so the same calls compile to no-ops
+in the server binary. Gate only the proxy behind your app's `server` feature:
+`dx-umami = { …, features = ["server"] }` in the optional server dependency
+position, or propagate `dx-umami/server` from your app's `server` feature.
 
 CI checks each combination a real app ships, not just `--all-features`: an
 optional feature is a configuration someone builds, and a misplaced `cfg` breaks
