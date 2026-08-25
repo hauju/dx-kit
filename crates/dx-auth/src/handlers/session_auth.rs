@@ -487,6 +487,60 @@ async fn exchange_and_resolve(
     })
 }
 
+// ── Registration gate ───────────────────────────────────────────────
+
+/// Whether a not-yet-registered `email` may create an account.
+///
+/// Registration is the one place an unauthenticated caller can cross into the
+/// trust boundary, so it is closed by default. An operator opens it with an
+/// allowlist of exact addresses and/or domains; when neither is configured,
+/// registration is permitted only while no user exists yet (first-run
+/// bootstrap) and refused afterwards, so a fresh deployment is usable without
+/// configuration but does not stay open to the internet.
+async fn registration_allowed(
+    auth_state: &AuthState,
+    auth_config: &AuthConfig,
+    email: &str,
+) -> AuthResult<bool> {
+    let emails = &auth_config.allowed_registration_emails;
+    let domains = &auth_config.allowed_registration_domains;
+
+    // Only the no-allowlist bootstrap path needs to know whether users exist,
+    // so avoid the query when an allowlist is configured.
+    let has_users = if emails.is_empty() && domains.is_empty() {
+        auth_state.user_store.has_any_users().await?
+    } else {
+        false
+    };
+
+    Ok(registration_permitted(emails, domains, email, has_users))
+}
+
+/// Pure allowlist decision, split out so it can be unit-tested without a store.
+///
+/// `email` is assumed already trimmed and lowercased (as `start_session` does).
+/// `has_users` is consulted only when both allowlists are empty.
+fn registration_permitted(
+    emails: &[String],
+    domains: &[String],
+    email: &str,
+    has_users: bool,
+) -> bool {
+    if emails.is_empty() && domains.is_empty() {
+        // No allowlist configured: allow the very first account, then close.
+        return !has_users;
+    }
+
+    if emails.iter().any(|allowed| allowed == email) {
+        return true;
+    }
+
+    matches!(
+        email.rsplit('@').next(),
+        Some(domain) if domains.iter().any(|allowed| allowed == domain)
+    )
+}
+
 // ── POST /auth/session/start ────────────────────────────────────────
 
 pub async fn start_session(
@@ -603,7 +657,17 @@ pub async fn start_session(
             "This account has no supported login method".to_string(),
         ))
     } else {
-        // ── New user: gate registration with a CAPTCHA before sending an OTP ──
+        // ── New user: check the registration allowlist, then gate with a
+        //    CAPTCHA before sending an OTP ──
+        if !registration_allowed(&auth_state, &auth_config, &email).await? {
+            info!(
+                "Registration refused for '{}' (not permitted to register)",
+                email
+            );
+            return Err(AuthError::Unauthorized(
+                "Registration is not open for this address".to_string(),
+            ));
+        }
         info!(
             "User '{}' not found in FerrisKey, requiring CAPTCHA before OTP",
             email
@@ -867,6 +931,18 @@ pub async fn verify_otp_handler(
                 .ok_or_else(|| AuthError::ServerStateError("Missing login email".to_string()))?;
 
             let user: FerrisKeyUser = if is_deferred {
+                // Re-check the allowlist at the point of creation, independent of
+                // the start-of-flow check: this is the only step that actually
+                // provisions an account, so it must not rely on an upstream gate.
+                if !registration_allowed(&auth_state, &auth_config, &email).await? {
+                    warn!(
+                        "Blocked account creation for '{}' (not permitted to register)",
+                        email
+                    );
+                    return Err(AuthError::Unauthorized(
+                        "Registration is not open for this address".to_string(),
+                    ));
+                }
                 let user = ferriskey::create_user(fk.base, fk.realm, &svc_token, &email).await?;
                 session.remove::<bool>(DEFERRED_NEW_USER_KEY).await?;
                 user
@@ -1277,4 +1353,112 @@ pub async fn accept_tos_handler(
         error: None,
         retry_after_seconds: None,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::registration_permitted;
+
+    fn v(items: &[&str]) -> Vec<String> {
+        items.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn no_allowlist_permits_only_the_first_account() {
+        // Fresh deployment (no users yet): the first registration is allowed.
+        assert!(registration_permitted(&[], &[], "first@example.com", false));
+        // Once a user exists, registration closes.
+        assert!(!registration_permitted(
+            &[],
+            &[],
+            "second@example.com",
+            true
+        ));
+    }
+
+    #[test]
+    fn email_allowlist_is_exact_match() {
+        let emails = v(&["ops@example.com"]);
+        assert!(registration_permitted(
+            &emails,
+            &[],
+            "ops@example.com",
+            true
+        ));
+        // A different address is refused even though a user already exists is irrelevant here.
+        assert!(!registration_permitted(
+            &emails,
+            &[],
+            "intruder@example.com",
+            false
+        ));
+        // No substring or suffix matching.
+        assert!(!registration_permitted(
+            &emails,
+            &[],
+            "notops@example.com",
+            false
+        ));
+    }
+
+    #[test]
+    fn domain_allowlist_matches_the_part_after_the_at() {
+        let domains = v(&["example.com"]);
+        assert!(registration_permitted(
+            &[],
+            &domains,
+            "anyone@example.com",
+            true
+        ));
+        assert!(!registration_permitted(
+            &[],
+            &domains,
+            "anyone@evil.com",
+            false
+        ));
+        // A domain that is only a suffix of the address's domain must not match.
+        assert!(!registration_permitted(
+            &[],
+            &domains,
+            "anyone@notexample.com",
+            false
+        ));
+    }
+
+    #[test]
+    fn a_configured_allowlist_ignores_the_bootstrap_rule() {
+        // With an allowlist set, has_users is not consulted: a non-listed address
+        // is refused even on a brand-new instance with no users.
+        let emails = v(&["ops@example.com"]);
+        assert!(!registration_permitted(
+            &emails,
+            &[],
+            "someone@example.com",
+            false
+        ));
+    }
+
+    #[test]
+    fn email_and_domain_allowlists_combine() {
+        let emails = v(&["contractor@other.com"]);
+        let domains = v(&["example.com"]);
+        assert!(registration_permitted(
+            &emails,
+            &domains,
+            "staff@example.com",
+            true
+        ));
+        assert!(registration_permitted(
+            &emails,
+            &domains,
+            "contractor@other.com",
+            true
+        ));
+        assert!(!registration_permitted(
+            &emails,
+            &domains,
+            "stranger@other.com",
+            true
+        ));
+    }
 }

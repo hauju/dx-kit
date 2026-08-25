@@ -6,7 +6,7 @@ name = "dx-auth"
 # _SECRET_KEY), which replaces the image CAPTCHA for new users when set.
 # 0.2.2 adds the optional `on_signup` callback on `LoginPage`, fired alongside
 # `on_success` when the flow registered a new account (for signup analytics).
-version = "0.2.2"
+version = "0.3.0"
 authors.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -43,6 +43,8 @@ jsonwebtoken = { version = "10", features = ["aws_lc_rs"], optional = true }
 sha2 = { version = "0.10", optional = true }
 base64 = { workspace = true, optional = true }
 governor = { version = "0.10", optional = true, features = ["std"] }
+# rt + time for the rate limiter's idle-bucket sweeper task.
+tokio = { version = "1", optional = true, features = ["rt", "time"] }
 chrono = { version = "0.4.43", default-features = false, features = [
     "std",
     "now",
@@ -88,6 +90,7 @@ server = [
     "dep:url",
     "dep:crypto",
     "dep:governor",
+    "dep:tokio",
     "dep:captcha-rs",
     "dep:jsonwebtoken",
     "dep:sha2",

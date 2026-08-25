@@ -32,6 +32,15 @@ pub struct AuthConfig {
     /// Whether auth rate limiting may trust X-Forwarded-For, X-Real-IP, and
     /// Forwarded headers from an upstream reverse proxy.
     pub trust_proxy_headers: bool,
+
+    // ── Registration allowlist ─────────────────────────────────────
+    /// Exact, lowercased email addresses permitted to self-register.
+    /// Empty means no address allowlist (see [`crate::AuthConfig`] docs on the
+    /// bootstrap behaviour when both allowlists are empty).
+    pub allowed_registration_emails: Vec<String>,
+    /// Lowercased email domains (the part after `@`) permitted to self-register.
+    /// Empty means no domain allowlist.
+    pub allowed_registration_domains: Vec<String>,
 }
 
 impl Default for AuthConfig {
@@ -47,6 +56,8 @@ impl Default for AuthConfig {
             ferriskey_client_secret: None,
             base_url: "http://localhost:8080".to_string(),
             trust_proxy_headers: false,
+            allowed_registration_emails: Vec::new(),
+            allowed_registration_domains: Vec::new(),
         }
     }
 }

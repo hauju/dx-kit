@@ -46,6 +46,15 @@ pub trait AuthUserStore: Send + Sync + 'static {
     async fn record_login(&self, _user_id: &str) -> AuthResult<()> {
         Ok(())
     }
+
+    /// Whether any user account exists yet.
+    ///
+    /// Consulted only to permit first-run registration when no allowlist is
+    /// configured. The default returns `true` (i.e. "users exist, so keep
+    /// registration closed") so an impl that does not override it fails safe.
+    async fn has_any_users(&self) -> AuthResult<bool> {
+        Ok(true)
+    }
 }
 
 /// A stored WebAuthn credential, as the login and enrollment handlers need it.
