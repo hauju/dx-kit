@@ -9,7 +9,14 @@ name = "dx-auth"
 # 0.3.1 is dependency maintenance only: jsonwebtoken 11 and gloo-timers 0.4
 # (both internal, no API change), plus the lockfile bump that pulls h2 >=0.4.16
 # for RUSTSEC-2026-0258.
-version = "0.3.1"
+# 0.4.0 drops the built-in image CAPTCHA and the captcha-rs dependency with it
+# (88 transitive crates, and both of the kit's unmaintained-crate advisories).
+# Bollwark is now the only captcha: set CAPTCHA_URL / _SITE_KEY / _SECRET_KEY.
+# Without them, new-user registration is gated by the allowlist alone, so a
+# public deployment must configure bollwark. Removes `POST
+# /auth/session/captcha/refresh`, the `captcha_image` response field, and the
+# `answer` field on the captcha-verify request.
+version = "0.4.0"
 authors.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -54,7 +61,6 @@ chrono = { version = "0.4.43", default-features = false, features = [
     "serde",
 ], optional = true }
 url = { version = "2.5", optional = true }
-captcha-rs = { version = "0.5", optional = true }
 
 # WebAuthn Relying Party (`passkey-rp`). `ring` verifies assertion signatures
 # (ES256 / EdDSA / RS256); `ciborium` decodes the COSE key and the CBOR
@@ -94,7 +100,6 @@ server = [
     "dep:crypto",
     "dep:governor",
     "dep:tokio",
-    "dep:captcha-rs",
     "dep:jsonwebtoken",
     "dep:sha2",
     "dep:base64",

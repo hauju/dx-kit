@@ -9,7 +9,7 @@ code. FerrisKey is the identity provider; the login screen is yours.
 
 ```toml
 [dependencies]
-dx-auth = { git = "https://github.com/hauju/dx-kit.git", tag = "dx-auth-v0.1.1", features = ["server"] }
+dx-auth = { git = "https://github.com/hauju/dx-kit.git", tag = "dx-auth-v0.4.0", features = ["server"] }
 ```
 
 No default features. Enable `server` (Axum handlers, FerrisKey client, session
@@ -95,8 +95,7 @@ so it inherits the host app's DaisyUI theme rather than shipping its own CSS.
 /auth/session/password/verify
 /auth/session/otp/verify
 /auth/session/otp/resend
-/auth/session/captcha/verify        new-user registration
-/auth/session/captcha/refresh
+/auth/session/captcha/verify        new-user registration (bollwark)
 /auth/session/accept-tos
 /auth/dev-login                     debug builds only
 ```
@@ -124,8 +123,13 @@ fresh quota per request.
 **`/auth/dev-login` is compiled out of release builds** (`#[cfg(debug_assertions)]`)
 *and* additionally requires `DEV_LOGIN=true` at runtime.
 
-**CAPTCHA guards new-user registration** — session-backed, 5 attempts, 5-minute
-expiry, generated in-process by `captcha-rs`. No external service to configure.
+**A captcha guards new-user registration**, using bollwark: set `CAPTCHA_URL`,
+`CAPTCHA_SITE_KEY` and `CAPTCHA_SECRET_KEY` and the login page mounts the widget
+in the email form, pre-solving while the user types; the token is verified
+server-to-server and fails closed on a missing token, a rejection, or an
+unreachable captcha server. With those vars unset there is no captcha and the
+registration allowlist is the only gate — fine for an internal deployment,
+not for a public one.
 
 **reqwest is built on rustls**, not native-tls, to keep OpenSSL out of slim
 runtime images.

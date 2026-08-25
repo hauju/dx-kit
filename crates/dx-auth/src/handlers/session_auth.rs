@@ -12,7 +12,7 @@
 //!   things up.
 //! * **Email OTP** — fully on our side. We mint and email the code, store it
 //!   in tower-sessions, and on success either *create* the FerrisKey user
-//!   (deferred new-user path, gated by CAPTCHA) or *update* email_verified.
+//!   (deferred new-user path, gated by captcha) or *update* email_verified.
 //!   No FerrisKey flow is involved on this path — we look the user up by
 //!   email and use that record's `id` as the OIDC subject.
 
@@ -59,13 +59,6 @@ const MAX_RESEND_COUNT: u32 = 5;
 // Deferred user creation: set when a new user starts login but hasn't verified OTP yet.
 // The FerrisKey user is only created after OTP is verified, preventing bot-created accounts.
 const DEFERRED_NEW_USER_KEY: &str = "ferriskey.deferred_new_user";
-
-// CAPTCHA for new user registration
-const CAPTCHA_ANSWER_KEY: &str = "captcha.answer";
-const CAPTCHA_EXPIRES_AT_KEY: &str = "captcha.expires_at";
-const CAPTCHA_ATTEMPTS_KEY: &str = "captcha.attempts";
-const MAX_CAPTCHA_ATTEMPTS: u32 = 5;
-const CAPTCHA_EXPIRY_SECONDS: i64 = 300;
 
 const PASSWORD_ATTEMPTS_KEY: &str = "password.attempts";
 const MAX_PASSWORD_ATTEMPTS: u32 = 5;
@@ -164,11 +157,9 @@ pub struct StartSessionResponse {
     pub redirect_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub captcha_required: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub captcha_image: Option<String>,
-    /// Set (with `captcha_site_key`) when the gate is the bollwark widget
-    /// rather than the image CAPTCHA. The login page uses them to mount the
-    /// widget; both values are public by design.
+    /// Set (with `captcha_site_key`) when registration is gated by the
+    /// bollwark widget. The login page uses them to mount the widget; both
+    /// values are public by design.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub captcha_server_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -187,10 +178,7 @@ pub struct VerifyOtpRequest {
 
 #[derive(Deserialize)]
 pub struct VerifyCaptchaRequest {
-    /// The image-CAPTCHA answer. Unused in bollwark mode.
-    #[serde(default)]
-    pub answer: String,
-    /// The bollwark widget's opaque token. Required in bollwark mode.
+    /// The bollwark widget's opaque token.
     #[serde(default)]
     pub captcha_token: Option<String>,
 }
@@ -201,11 +189,6 @@ pub struct CaptchaVerifyResponse {
     pub otp_sent: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
-}
-
-#[derive(Serialize)]
-pub struct CaptchaRefreshResponse {
-    pub captcha_image: String,
 }
 
 #[derive(Serialize)]
@@ -304,28 +287,6 @@ async fn generate_and_send_otp(
 
     info!(to = %email, purpose = %purpose, "Sent OTP verification code");
     Ok(())
-}
-
-async fn generate_captcha(session: &tower_sessions::Session) -> AuthResult<String> {
-    let captcha = captcha_rs::CaptchaBuilder::new()
-        .length(5)
-        .width(220)
-        .height(60)
-        .dark_mode(true)
-        .complexity(5)
-        .compression(40)
-        .build();
-
-    let answer = captcha.text.to_lowercase();
-    let image = captcha.to_base64();
-
-    let expires_at = chrono::Utc::now().timestamp() + CAPTCHA_EXPIRY_SECONDS;
-    session.insert(CAPTCHA_ANSWER_KEY, &answer).await?;
-    session.insert(CAPTCHA_EXPIRES_AT_KEY, expires_at).await?;
-    session.insert(CAPTCHA_ATTEMPTS_KEY, 0u32).await?;
-
-    info!("Generated CAPTCHA for new user registration");
-    Ok(image)
 }
 
 async fn verify_otp_from_session(
@@ -607,7 +568,6 @@ pub async fn start_session(
                         needs_tos_acceptance: None,
                         redirect_url: None,
                         captcha_required: None,
-                        captcha_image: None,
                         captcha_server_url: None,
                         captcha_site_key: None,
                     }));
@@ -635,7 +595,6 @@ pub async fn start_session(
                 needs_tos_acceptance: None,
                 redirect_url: None,
                 captcha_required: None,
-                captcha_image: None,
                 captcha_server_url: None,
                 captcha_site_key: None,
             }));
@@ -668,16 +627,16 @@ pub async fn start_session(
                 "Registration is not open for this address".to_string(),
             ));
         }
-        info!(
-            "User '{}' not found in FerrisKey, requiring CAPTCHA before OTP",
-            email
-        );
         session.insert(DEFERRED_NEW_USER_KEY, true).await?;
 
         // Bollwark configured: the widget in the email form has been
         // pre-solving already; tell the page to forward its token. No
         // server-side state to stash — the token is the whole proof.
         if let Some(cfg) = captcha_cfg() {
+            info!(
+                "User '{}' not found in FerrisKey, requiring captcha before OTP",
+                email
+            );
             return Ok(Json(StartSessionResponse {
                 session_id: String::new(),
                 public_key_options: None,
@@ -688,28 +647,20 @@ pub async fn start_session(
                 needs_tos_acceptance: None,
                 redirect_url: None,
                 captcha_required: Some(true),
-                captcha_image: None,
                 captcha_server_url: Some(cfg.server_url),
                 captcha_site_key: Some(cfg.site_key),
             }));
         }
 
-        let image = generate_captcha(&session).await?;
-
-        Ok(Json(StartSessionResponse {
-            session_id: String::new(),
-            public_key_options: None,
-            otp_sent: false,
-            is_new_user: true,
-            has_passkeys: false,
-            has_password: false,
-            needs_tos_acceptance: None,
-            redirect_url: None,
-            captcha_required: Some(true),
-            captcha_image: Some(image),
-            captcha_server_url: None,
-            captcha_site_key: None,
-        }))
+        // No captcha deployment: the registration allowlist is the whole gate.
+        // It is closed by default and re-checked at account creation, so an
+        // internal deployment stays usable without a captcha server, while a
+        // public one is expected to set CAPTCHA_URL.
+        warn!(
+            "No captcha configured; registration for '{}' is gated by the allowlist alone",
+            email
+        );
+        send_otp_session(&auth_state, &session, &email, true).await
     }
 }
 
@@ -736,7 +687,6 @@ async fn send_otp_session(
         needs_tos_acceptance: None,
         redirect_url: None,
         captcha_required: None,
-        captcha_image: None,
         captcha_server_url: None,
         captcha_site_key: None,
     }))
@@ -1101,97 +1051,30 @@ pub async fn verify_captcha_handler(
         ));
     }
 
-    // Bollwark mode: the proof is the widget token, verified server-to-server.
-    // Fail-closed — a missing token, a rejection, and an unreachable captcha
-    // server all block registration.
-    if let Some(cfg) = captcha_cfg() {
-        let Some(token) = req.captcha_token.as_deref().filter(|t| !t.is_empty()) else {
-            return Ok(Json(CaptchaVerifyResponse {
-                success: false,
-                otp_sent: false,
-                error: Some("Verification token missing. Please try again.".to_string()),
-            }));
-        };
-        if !verify_captcha_token(&cfg, token).await? {
-            return Ok(Json(CaptchaVerifyResponse {
-                success: false,
-                otp_sent: false,
-                error: Some("Verification failed. Please try again.".to_string()),
-            }));
-        }
+    // The proof is the widget token, verified server-to-server. Fail-closed —
+    // a missing token, a rejection, and an unreachable captcha server all
+    // block registration. Only reached when start_session asked for a captcha,
+    // so an unconfigured captcha here means the page is out of step.
+    let Some(cfg) = captcha_cfg() else {
+        return Err(AuthError::BadRequest(
+            "No captcha is configured for this deployment".to_string(),
+        ));
+    };
 
-        let email = session
-            .get::<String>(LOGIN_EMAIL_KEY)
-            .await?
-            .ok_or_else(|| AuthError::ServerStateError("Missing login email".to_string()))?;
-
-        generate_and_send_otp(&auth_state, &session, &email, "login").await?;
-
-        info!("Bollwark captcha verified, OTP sent to new user: {}", email);
-
-        return Ok(Json(CaptchaVerifyResponse {
-            success: true,
-            otp_sent: true,
-            error: None,
-        }));
-    }
-
-    let stored_answer = session
-        .get::<String>(CAPTCHA_ANSWER_KEY)
-        .await?
-        .ok_or_else(|| AuthError::BadRequest("No CAPTCHA in progress".to_string()))?;
-
-    let expires_at = session
-        .get::<i64>(CAPTCHA_EXPIRES_AT_KEY)
-        .await?
-        .ok_or_else(|| AuthError::BadRequest("No CAPTCHA in progress".to_string()))?;
-
-    if chrono::Utc::now().timestamp() > expires_at {
-        let _ = session.remove::<String>(CAPTCHA_ANSWER_KEY).await;
-        let _ = session.remove::<i64>(CAPTCHA_EXPIRES_AT_KEY).await;
-        let _ = session.remove::<u32>(CAPTCHA_ATTEMPTS_KEY).await;
+    let Some(token) = req.captcha_token.as_deref().filter(|t| !t.is_empty()) else {
         return Ok(Json(CaptchaVerifyResponse {
             success: false,
             otp_sent: false,
-            error: Some("CAPTCHA has expired. Please try again.".to_string()),
+            error: Some("Verification token missing. Please try again.".to_string()),
         }));
-    }
-
-    let attempts = session.get::<u32>(CAPTCHA_ATTEMPTS_KEY).await?.unwrap_or(0);
-    if attempts >= MAX_CAPTCHA_ATTEMPTS {
-        let _ = session.remove::<String>(CAPTCHA_ANSWER_KEY).await;
-        let _ = session.remove::<i64>(CAPTCHA_EXPIRES_AT_KEY).await;
-        let _ = session.remove::<u32>(CAPTCHA_ATTEMPTS_KEY).await;
+    };
+    if !verify_captcha_token(&cfg, token).await? {
         return Ok(Json(CaptchaVerifyResponse {
             success: false,
             otp_sent: false,
-            error: Some("Too many failed attempts. Please try again.".to_string()),
+            error: Some("Verification failed. Please try again.".to_string()),
         }));
     }
-
-    let submitted = req.answer.trim().to_lowercase();
-    if submitted
-        .as_bytes()
-        .ct_eq(stored_answer.as_bytes())
-        .unwrap_u8()
-        != 1
-    {
-        let _ = session.insert(CAPTCHA_ATTEMPTS_KEY, attempts + 1).await;
-        let remaining = MAX_CAPTCHA_ATTEMPTS - attempts - 1;
-        return Ok(Json(CaptchaVerifyResponse {
-            success: false,
-            otp_sent: false,
-            error: Some(format!(
-                "Incorrect CAPTCHA. {} attempt{} remaining.",
-                remaining,
-                if remaining == 1 { "" } else { "s" }
-            )),
-        }));
-    }
-
-    let _ = session.remove::<String>(CAPTCHA_ANSWER_KEY).await;
-    let _ = session.remove::<i64>(CAPTCHA_EXPIRES_AT_KEY).await;
-    let _ = session.remove::<u32>(CAPTCHA_ATTEMPTS_KEY).await;
 
     let email = session
         .get::<String>(LOGIN_EMAIL_KEY)
@@ -1200,34 +1083,12 @@ pub async fn verify_captcha_handler(
 
     generate_and_send_otp(&auth_state, &session, &email, "login").await?;
 
-    info!("CAPTCHA verified, OTP sent to new user: {}", email);
+    info!("Captcha verified, OTP sent to new user: {}", email);
 
     Ok(Json(CaptchaVerifyResponse {
         success: true,
         otp_sent: true,
         error: None,
-    }))
-}
-
-// ── POST /auth/session/captcha/refresh ──────────────────────────────
-
-pub async fn refresh_captcha_handler(
-    session: tower_sessions::Session,
-) -> AuthResult<Json<CaptchaRefreshResponse>> {
-    let is_deferred = session
-        .get::<bool>(DEFERRED_NEW_USER_KEY)
-        .await?
-        .unwrap_or(false);
-    if !is_deferred {
-        return Err(AuthError::BadRequest(
-            "No pending registration session".to_string(),
-        ));
-    }
-
-    let image = generate_captcha(&session).await?;
-
-    Ok(Json(CaptchaRefreshResponse {
-        captcha_image: image,
     }))
 }
 
@@ -1282,9 +1143,6 @@ async fn finalize_login(
     session.remove::<i64>(CUSTOM_OTP_LAST_SENT_AT_KEY).await?;
     session.remove::<u32>(CUSTOM_OTP_RESEND_COUNT_KEY).await?;
     session.remove::<bool>(DEFERRED_NEW_USER_KEY).await?;
-    session.remove::<String>(CAPTCHA_ANSWER_KEY).await?;
-    session.remove::<i64>(CAPTCHA_EXPIRES_AT_KEY).await?;
-    session.remove::<u32>(CAPTCHA_ATTEMPTS_KEY).await?;
     session.remove::<u32>(PASSWORD_ATTEMPTS_KEY).await?;
 
     let needs_tos = match &user.tos_acceptance {

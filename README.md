@@ -24,7 +24,7 @@ Depend on a tag, not a branch — the tag *is* the version:
 [dependencies]
 dx-crypto = { git = "https://github.com/hauju/dx-kit.git", tag = "dx-crypto-v0.1.0" }
 dx-smtp   = { git = "https://github.com/hauju/dx-kit.git", tag = "dx-smtp-v0.1.0" }
-dx-auth   = { git = "https://github.com/hauju/dx-kit.git", tag = "dx-auth-v0.2.0" }
+dx-auth   = { git = "https://github.com/hauju/dx-kit.git", tag = "dx-auth-v0.4.0" }
 dx-umami  = { git = "https://github.com/hauju/dx-kit.git", tag = "dx-umami-v0.1.0" }
 ```
 
@@ -142,9 +142,11 @@ cadence and dx-blog. Each decision:
   submission — the merge replaced it.
 - **`handlers/dev_login.rs` is in**, `#[cfg(debug_assertions)]` and additionally
   gated on `DEV_LOGIN=true` at runtime. Four of the six copies had dropped it.
-- **CAPTCHA stays an optional feature.** It is inert unless `CAPTCHA_*` is
-  configured, because a shared crate must not require an external service to be
-  usable.
+- **The captcha stays optional.** It is inert unless `CAPTCHA_*` is configured,
+  because a shared crate must not require an external service to be usable. As
+  of dx-auth 0.4.0 bollwark is the only captcha: the built-in image CAPTCHA is
+  gone, and with it `captcha-rs` and the 88 transitive crates it pulled in.
+  Unconfigured, registration falls back to the allowlist alone.
 
 #### The `passkey-rp` feature (v0.2.0)
 

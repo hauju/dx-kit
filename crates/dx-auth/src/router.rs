@@ -17,8 +17,7 @@ use crate::state::AuthState;
 /// - `POST /auth/session/passkey/verify` — Verify passkey assertion
 /// - `POST /auth/session/otp/verify` — Verify email OTP
 /// - `POST /auth/session/otp/resend` — Resend OTP code
-/// - `POST /auth/session/captcha/verify` — Verify CAPTCHA for new user registration
-/// - `POST /auth/session/captcha/refresh` — Generate a new CAPTCHA image
+/// - `POST /auth/session/captcha/verify` — Verify the captcha for new user registration
 /// - `POST /auth/session/accept-tos` — Accept Terms of Service
 ///
 /// Security middleware included:
@@ -53,10 +52,6 @@ pub fn auth_router(auth_config: AuthConfig, auth_state: AuthState) -> Router {
         .route(
             "/auth/session/captcha/verify",
             post(handlers::verify_captcha_handler),
-        )
-        .route(
-            "/auth/session/captcha/refresh",
-            post(handlers::refresh_captcha_handler),
         )
         .route(
             "/auth/session/accept-tos",

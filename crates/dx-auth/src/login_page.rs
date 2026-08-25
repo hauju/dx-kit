@@ -20,9 +20,11 @@ pub fn LoginPage(
     embed: bool,
     /// Bollwark captcha widget: `(server_url, site_key)`. When set, new-user
     /// registration is gated by the widget pre-solving invisibly inside the
-    /// email form, instead of the image CAPTCHA. Pass the same values the
-    /// server reads from `CAPTCHA_URL` / `CAPTCHA_SITE_KEY`; both are public
-    /// by design.
+    /// email form. Pass the same values the server reads from `CAPTCHA_URL` /
+    /// `CAPTCHA_SITE_KEY`; both are public by design. Leave unset only where
+    /// the registration allowlist is gate enough (internal deployments) — the
+    /// server must be unconfigured too, or it will ask for a widget this page
+    /// cannot mount.
     #[props(default)]
     captcha_config: Option<(String, String)>,
 ) -> Element {
@@ -52,10 +54,6 @@ pub fn LoginPage(
 
     // Store passkey options for the WebAuthn browser API
     let passkey_options = use_signal(|| None::<String>);
-
-    // CAPTCHA state for new user registration
-    let mut captcha_image = use_signal(|| None::<String>);
-    let mut captcha_answer = use_signal(String::new);
 
     // Pre-solve the bollwark widget invisibly while the user is on the
     // email-entry step. The widget is mounted inside the email <form> (see the
@@ -132,7 +130,6 @@ pub fn LoginPage(
             has_password,
             is_loading,
             passkey_options,
-            captcha_image,
             has_captcha_widget,
             user_refresh,
         );
@@ -340,94 +337,11 @@ pub fn LoginPage(
         });
     };
 
-    // Verify CAPTCHA answer
-    let on_captcha_verify = move |evt: FormEvent| {
-        evt.prevent_default();
-        spawn(async move {
-            let answer = captcha_answer().trim().to_string();
-            if answer.is_empty() {
-                error_msg.set(Some(
-                    "Please enter the characters shown in the image.".to_string(),
-                ));
-                success_msg.set(None);
-                return;
-            }
-            is_loading.set(true);
-            error_msg.set(None);
-            success_msg.set(None);
-
-            #[cfg(feature = "web")]
-            {
-                let result: std::result::Result<CaptchaVerifyResp, String> = wasm_post_json(
-                    "/auth/session/captcha/verify",
-                    Some(serde_json::json!({ "answer": answer })),
-                )
-                .await;
-                match result {
-                    Ok(resp) => {
-                        if resp.success {
-                            // CAPTCHA passed, OTP sent → go to OTP input
-                            captcha_answer.set(String::new());
-                            captcha_image.set(None);
-                            step.set(LoginStep::OtpCodeInput);
-                        } else {
-                            let msg = resp
-                                .error
-                                .unwrap_or_else(|| "CAPTCHA verification failed".to_string());
-                            error_msg.set(Some(msg));
-                        }
-                        is_loading.set(false);
-                    }
-                    Err(e) => {
-                        error_msg.set(Some(e));
-                        is_loading.set(false);
-                    }
-                }
-            }
-
-            #[cfg(not(feature = "web"))]
-            {
-                is_loading.set(false);
-            }
-        });
-    };
-
-    // Refresh CAPTCHA image
-    let on_captcha_refresh = move |_| {
-        spawn(async move {
-            is_loading.set(true);
-            error_msg.set(None);
-
-            #[cfg(feature = "web")]
-            {
-                let result: std::result::Result<CaptchaRefreshResp, String> =
-                    wasm_post_json("/auth/session/captcha/refresh", None).await;
-                match result {
-                    Ok(resp) => {
-                        captcha_image.set(Some(resp.captcha_image));
-                        captcha_answer.set(String::new());
-                    }
-                    Err(e) => {
-                        error_msg.set(Some(e));
-                    }
-                }
-                is_loading.set(false);
-            }
-
-            #[cfg(not(feature = "web"))]
-            {
-                is_loading.set(false);
-            }
-        });
-    };
-
     let on_back = move |_| {
         error_msg.set(None);
         success_msg.set(None);
         otp_code.set(String::new());
         password.set(String::new());
-        captcha_answer.set(String::new());
-        captcha_image.set(None);
         step.set(LoginStep::EmailInput);
     };
 
@@ -530,72 +444,6 @@ pub fn LoginPage(
                             div { class: "text-center space-y-4 py-4",
                                 span { class: "loading loading-spinner loading-lg text-primary" }
                                 p { class: "text-base-content/70", "Setting things up..." }
-                            }
-                        ),
-
-                        LoginStep::CaptchaChallenge => rsx!(
-                            div { class: "space-y-4",
-                                div { class: "text-center",
-                                    div { class: "badge badge-info badge-outline mb-2",
-                                        "New account"
-                                    }
-                                    p { class: "text-sm text-base-content/70",
-                                        "Please verify you're human to continue."
-                                    }
-                                }
-
-                                // CAPTCHA image
-                                if let Some(img) = captcha_image() {
-                                    div { class: "flex justify-center",
-                                        img {
-                                            src: "{img}",
-                                            alt: "CAPTCHA",
-                                            class: "rounded-lg border border-base-300",
-                                        }
-                                    }
-                                }
-
-                                form {
-                                    onsubmit: on_captcha_verify,
-                                    class: "space-y-4",
-                                    fieldset {
-                                        class: "fieldset",
-                                        label { class: "fieldset-label", "Enter the characters above" }
-                                        input {
-                                            r#type: "text",
-                                            class: "input input-bordered w-full text-center text-xl tracking-widest",
-                                            placeholder: "ABCDE",
-                                            maxlength: "10",
-                                            autofocus: true,
-                                            autocomplete: "off",
-                                            value: "{captcha_answer}",
-                                            oninput: move |e| captcha_answer.set(e.value()),
-                                        }
-                                    }
-                                    button {
-                                        r#type: "submit",
-                                        class: "btn btn-primary w-full",
-                                        disabled: is_loading(),
-                                        if is_loading() {
-                                            span { class: "loading loading-spinner loading-sm" }
-                                        }
-                                        "Continue"
-                                    }
-                                }
-
-                                div { class: "flex justify-between items-center text-sm",
-                                    button {
-                                        class: "btn btn-ghost btn-sm text-base-content/50",
-                                        onclick: on_back,
-                                        "Back"
-                                    }
-                                    button {
-                                        class: "btn btn-ghost btn-sm text-primary",
-                                        onclick: on_captcha_refresh,
-                                        disabled: is_loading(),
-                                        "Can't read it? Try another"
-                                    }
-                                }
                             }
                         ),
 
@@ -860,7 +708,6 @@ pub fn LoginPage(
 enum LoginStep {
     EmailInput,
     Detecting,
-    CaptchaChallenge,
     PasskeyChallenge,
     PasswordInput,
     OtpCodeInput,
@@ -980,7 +827,6 @@ struct StartSessionResp {
     #[allow(dead_code)]
     redirect_url: Option<String>,
     captcha_required: Option<bool>,
-    captcha_image: Option<String>,
 }
 
 #[cfg(feature = "web")]
@@ -990,12 +836,6 @@ struct CaptchaVerifyResp {
     #[allow(dead_code)]
     otp_sent: bool,
     error: Option<String>,
-}
-
-#[cfg(feature = "web")]
-#[derive(serde::Deserialize)]
-struct CaptchaRefreshResp {
-    captcha_image: String,
 }
 
 #[cfg(feature = "web")]
@@ -1078,7 +918,6 @@ fn start_session_flow(
     mut has_password: Signal<bool>,
     mut is_loading: Signal<bool>,
     mut passkey_options: Signal<Option<String>>,
-    mut captcha_image: Signal<Option<String>>,
     captcha_widget: bool,
     user_refresh: Signal<UserDataRefreshTrigger>,
 ) {
@@ -1107,9 +946,12 @@ fn start_session_flow(
                         step.set(LoginStep::EmailInput);
                         complete_captcha_flow(step, error_msg, is_loading).await;
                     } else {
-                        // New user → image CAPTCHA required before OTP
-                        captcha_image.set(resp.captcha_image);
-                        step.set(LoginStep::CaptchaChallenge);
+                        // The server asked for a captcha the page cannot mount:
+                        // `captcha_config` was not passed to `LoginPage`.
+                        error_msg.set(Some(
+                            "Verification is unavailable. Please try again later.".to_string(),
+                        ));
+                        step.set(LoginStep::EmailInput);
                         is_loading.set(false);
                     }
                 } else if let Some(pk_opts) = resp.public_key_options {
