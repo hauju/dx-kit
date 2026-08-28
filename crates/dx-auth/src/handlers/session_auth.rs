@@ -45,6 +45,10 @@ pub(crate) const TOS_PENDING_REDIRECT_KEY: &str = "tos.pending_redirect";
 
 // Custom OTP session keys (our own email OTP, not FerrisKey)
 const CUSTOM_OTP_CODE_KEY: &str = "custom_otp.code";
+// The address the code was actually mailed to. An OTP proves ownership of this
+// address and of nothing else, so verification resolves the user from *this*
+// key — never from `login.email`, which any later /session/start overwrites.
+const CUSTOM_OTP_EMAIL_KEY: &str = "custom_otp.email";
 const CUSTOM_OTP_EXPIRES_AT_KEY: &str = "custom_otp.expires_at";
 const CUSTOM_OTP_PURPOSE_KEY: &str = "custom_otp.purpose";
 const CUSTOM_OTP_ATTEMPTS_KEY: &str = "custom_otp.attempts";
@@ -258,6 +262,7 @@ async fn generate_and_send_otp(
 
     let expires_at = chrono::Utc::now().timestamp() + 600;
     session.insert(CUSTOM_OTP_CODE_KEY, &code).await?;
+    session.insert(CUSTOM_OTP_EMAIL_KEY, email).await?;
     session
         .insert(CUSTOM_OTP_EXPIRES_AT_KEY, expires_at)
         .await?;
@@ -289,12 +294,43 @@ async fn generate_and_send_otp(
     Ok(())
 }
 
+/// Wipe the in-flight OTP record. Every field goes together: a code that
+/// outlives the address it was bound to is exactly the state that let one
+/// address's OTP be verified against another address's account.
+async fn clear_otp_state(session: &tower_sessions::Session) {
+    let _ = session.remove::<String>(CUSTOM_OTP_CODE_KEY).await;
+    let _ = session.remove::<String>(CUSTOM_OTP_EMAIL_KEY).await;
+    let _ = session.remove::<i64>(CUSTOM_OTP_EXPIRES_AT_KEY).await;
+    let _ = session.remove::<String>(CUSTOM_OTP_PURPOSE_KEY).await;
+    let _ = session.remove::<u32>(CUSTOM_OTP_ATTEMPTS_KEY).await;
+}
+
+/// Drop credential state left over from an earlier attempt in this session.
+/// Without it, an OTP and a `deferred_new_user` flag issued for one address
+/// survive into a `/session/start` for a different address.
+///
+/// Deliberately keeps the resend throttle and the password-attempt counter:
+/// those are abuse controls, and restarting the flow must not reset them.
+async fn reset_pending_login_state(session: &tower_sessions::Session) {
+    clear_otp_state(session).await;
+    let _ = session.remove::<bool>(DEFERRED_NEW_USER_KEY).await;
+}
+
+/// Verify a submitted code against the in-flight OTP and return the address the
+/// code was mailed to. Callers must resolve the user from the returned email —
+/// it is the only address this OTP proves anything about.
 async fn verify_otp_from_session(
     session: &tower_sessions::Session,
     submitted_code: &str,
-) -> std::result::Result<(), String> {
+) -> std::result::Result<String, String> {
     let stored_code = session
         .get::<String>(CUSTOM_OTP_CODE_KEY)
+        .await
+        .map_err(|_| "Session error".to_string())?
+        .ok_or_else(|| "No verification code in progress".to_string())?;
+
+    let bound_email = session
+        .get::<String>(CUSTOM_OTP_EMAIL_KEY)
         .await
         .map_err(|_| "Session error".to_string())?
         .ok_or_else(|| "No verification code in progress".to_string())?;
@@ -306,10 +342,7 @@ async fn verify_otp_from_session(
         .ok_or_else(|| "No verification code in progress".to_string())?;
 
     if chrono::Utc::now().timestamp() > expires_at {
-        let _ = session.remove::<String>(CUSTOM_OTP_CODE_KEY).await;
-        let _ = session.remove::<i64>(CUSTOM_OTP_EXPIRES_AT_KEY).await;
-        let _ = session.remove::<String>(CUSTOM_OTP_PURPOSE_KEY).await;
-        let _ = session.remove::<u32>(CUSTOM_OTP_ATTEMPTS_KEY).await;
+        clear_otp_state(session).await;
         return Err("Verification code has expired. Please request a new one.".to_string());
     }
 
@@ -320,10 +353,7 @@ async fn verify_otp_from_session(
         .unwrap_or(0);
 
     if attempts >= MAX_OTP_ATTEMPTS {
-        let _ = session.remove::<String>(CUSTOM_OTP_CODE_KEY).await;
-        let _ = session.remove::<i64>(CUSTOM_OTP_EXPIRES_AT_KEY).await;
-        let _ = session.remove::<String>(CUSTOM_OTP_PURPOSE_KEY).await;
-        let _ = session.remove::<u32>(CUSTOM_OTP_ATTEMPTS_KEY).await;
+        clear_otp_state(session).await;
         return Err(
             "Too many failed attempts. Please request a new verification code.".to_string(),
         );
@@ -339,12 +369,9 @@ async fn verify_otp_from_session(
         return Err("Invalid verification code. Please try again.".to_string());
     }
 
-    let _ = session.remove::<String>(CUSTOM_OTP_CODE_KEY).await;
-    let _ = session.remove::<i64>(CUSTOM_OTP_EXPIRES_AT_KEY).await;
-    let _ = session.remove::<String>(CUSTOM_OTP_PURPOSE_KEY).await;
-    let _ = session.remove::<u32>(CUSTOM_OTP_ATTEMPTS_KEY).await;
+    clear_otp_state(session).await;
 
-    Ok(())
+    Ok(bound_email)
 }
 
 // ── Flow plumbing ────────────────────────────────────────────────────
@@ -527,6 +554,8 @@ pub async fn start_session(
             .await?;
     }
 
+    // A new attempt must not inherit the previous one's credentials.
+    reset_pending_login_state(&session).await;
     session.insert(LOGIN_EMAIL_KEY, &email).await?;
 
     let svc_token = service_token(&fk).await?;
@@ -867,18 +896,15 @@ pub async fn verify_otp_handler(
     }
 
     match verify_otp_from_session(&session, &code).await {
-        Ok(()) => {
+        // `email` is the address the code was mailed to, not `login.email` —
+        // the latter is rewritten by every /session/start and proves nothing.
+        Ok(email) => {
             let fk = FkConfig::from(&auth_config)?;
             let svc_token = service_token(&fk).await?;
             let is_deferred = session
                 .get::<bool>(DEFERRED_NEW_USER_KEY)
                 .await?
                 .unwrap_or(false);
-
-            let email = session
-                .get::<String>(LOGIN_EMAIL_KEY)
-                .await?
-                .ok_or_else(|| AuthError::ServerStateError("Missing login email".to_string()))?;
 
             let user: FerrisKeyUser = if is_deferred {
                 // Re-check the allowlist at the point of creation, independent of
@@ -893,7 +919,25 @@ pub async fn verify_otp_handler(
                         "Registration is not open for this address".to_string(),
                     ));
                 }
+                // `create_user` answers an HTTP 409 by returning the existing
+                // account, so even a deferred registration can resolve to a real
+                // user. Hold it to the same rule as the branch below: email-OTP
+                // is a login method only for accounts with no FerrisKey credential.
                 let user = ferriskey::create_user(fk.base, fk.realm, &svc_token, &email).await?;
+                let credentials =
+                    ferriskey::list_user_credentials(fk.base, fk.realm, &svc_token, &user.id)
+                        .await
+                        .map_err(|e| {
+                            warn!("list_user_credentials failed for {}: {:?}", user.id, e);
+                            AuthError::ServerStateError(
+                                "Unable to inspect user credentials".to_string(),
+                            )
+                        })?;
+                if !credentials.is_empty() {
+                    return Err(AuthError::Unauthorized(
+                        "Email code login is not available for this account".to_string(),
+                    ));
+                }
                 session.remove::<bool>(DEFERRED_NEW_USER_KEY).await?;
                 user
             } else {
@@ -984,6 +1028,15 @@ pub async fn resend_otp_handler(
         .get::<String>(LOGIN_EMAIL_KEY)
         .await?
         .ok_or_else(|| AuthError::BadRequest("No login session in progress".to_string()))?;
+
+    // Resending means re-sending something already issued. Without this guard the
+    // new-user path — which deliberately withholds the OTP until the registration
+    // challenge is solved — is skippable by calling resend instead.
+    if session.get::<String>(CUSTOM_OTP_CODE_KEY).await?.is_none() {
+        return Err(AuthError::BadRequest(
+            "No verification code in progress".to_string(),
+        ));
+    }
 
     let resend_count = session
         .get::<u32>(CUSTOM_OTP_RESEND_COUNT_KEY)
@@ -1137,6 +1190,7 @@ async fn finalize_login(
     session.remove::<String>(LOGIN_EMAIL_KEY).await?;
     session.remove::<String>(FERRISKEY_USER_ID_KEY).await?;
     session.remove::<String>(CUSTOM_OTP_CODE_KEY).await?;
+    session.remove::<String>(CUSTOM_OTP_EMAIL_KEY).await?;
     session.remove::<i64>(CUSTOM_OTP_EXPIRES_AT_KEY).await?;
     session.remove::<String>(CUSTOM_OTP_PURPOSE_KEY).await?;
     session.remove::<u32>(CUSTOM_OTP_ATTEMPTS_KEY).await?;

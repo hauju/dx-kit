@@ -16,7 +16,7 @@ name = "dx-auth"
 # public deployment must configure bollwark. Removes `POST
 # /auth/session/captcha/refresh`, the `captcha_image` response field, and the
 # `answer` field on the captcha-verify request.
-version = "0.4.0"
+version = "0.4.1"
 authors.workspace = true
 edition.workspace = true
 license.workspace = true

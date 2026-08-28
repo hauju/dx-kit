@@ -24,7 +24,7 @@ Depend on a tag, not a branch — the tag *is* the version:
 [dependencies]
 dx-crypto = { git = "https://github.com/hauju/dx-kit.git", tag = "dx-crypto-v0.1.0" }
 dx-smtp   = { git = "https://github.com/hauju/dx-kit.git", tag = "dx-smtp-v0.1.0" }
-dx-auth   = { git = "https://github.com/hauju/dx-kit.git", tag = "dx-auth-v0.4.0" }
+dx-auth   = { git = "https://github.com/hauju/dx-kit.git", tag = "dx-auth-v0.4.1" }
 dx-umami  = { git = "https://github.com/hauju/dx-kit.git", tag = "dx-umami-v0.1.0" }
 ```
 

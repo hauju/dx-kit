@@ -23,8 +23,12 @@ pub struct AuthUserInfo {
 
 /// Validate redirect URL to prevent open redirect attacks.
 /// Only allows relative paths starting with `/` (no protocol-relative `//`).
+///
+/// Browsers normalize `\` to `/` while parsing an authority, so `/\evil.com`
+/// reaches the same off-site host that `//evil.com` would — reject both forms.
 pub(crate) fn is_safe_redirect_url(url: &str) -> bool {
-    url.starts_with('/') && !url.starts_with("//")
+    let mut chars = url.chars();
+    chars.next() == Some('/') && !matches!(chars.next(), Some('/' | '\\'))
 }
 
 /// Quick email-format check. Returns `true` for plausibly-deliverable addresses.
@@ -206,7 +210,7 @@ pub async fn determine_post_login_redirect(
 
 #[cfg(test)]
 mod tests {
-    use super::is_valid_email;
+    use super::{is_safe_redirect_url, is_valid_email};
 
     #[test]
     fn accepts_normal_emails() {
@@ -233,5 +237,20 @@ mod tests {
         assert!(!is_valid_email("user@nodotdomain"));
         assert!(!is_valid_email("user@-bad.com"));
         assert!(!is_valid_email("user@bad-.com"));
+    }
+
+    #[test]
+    fn redirect_url_allows_only_relative_paths() {
+        assert!(is_safe_redirect_url("/"));
+        assert!(is_safe_redirect_url("/dashboard"));
+        assert!(is_safe_redirect_url("/demos/abc?tab=1"));
+
+        assert!(!is_safe_redirect_url(""));
+        assert!(!is_safe_redirect_url("//evil.com"));
+        assert!(!is_safe_redirect_url("https://evil.com"));
+        assert!(!is_safe_redirect_url("dashboard"));
+        // Browsers read `\` as `/` in the authority, so these are off-site too.
+        assert!(!is_safe_redirect_url("/\\evil.com"));
+        assert!(!is_safe_redirect_url("/\\/evil.com"));
     }
 }

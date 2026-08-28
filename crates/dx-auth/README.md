@@ -9,7 +9,7 @@ code. FerrisKey is the identity provider; the login screen is yours.
 
 ```toml
 [dependencies]
-dx-auth = { git = "https://github.com/hauju/dx-kit.git", tag = "dx-auth-v0.4.0", features = ["server"] }
+dx-auth = { git = "https://github.com/hauju/dx-kit.git", tag = "dx-auth-v0.4.1", features = ["server"] }
 ```
 
 No default features. Enable `server` (Axum handlers, FerrisKey client, session
