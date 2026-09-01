@@ -17,6 +17,11 @@ pub struct OidcJwtClaims {
     pub sub: String,
     #[serde(default)]
     pub email: Option<String>,
+    /// OIDC `email_verified` claim. Consulted before an id_token's email is
+    /// allowed to match an existing account by address; absent counts as
+    /// unverified.
+    #[serde(default)]
+    pub email_verified: Option<bool>,
     pub iss: String,
     pub exp: u64,
     pub iat: u64,

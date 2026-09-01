@@ -16,7 +16,12 @@ name = "dx-auth"
 # public deployment must configure bollwark. Removes `POST
 # /auth/session/captcha/refresh`, the `captcha_image` response field, and the
 # `answer` field on the captcha-verify request.
-version = "0.4.1"
+# 0.5.0 serialises the OTP and password attempt counters per session, so a burst
+# of parallel guesses no longer shares one read of the cap, and refuses to move
+# an existing account onto a new `sub` unless the IdP marks the email verified.
+# Breaking: `AuthUserInfo` gains `email_verified`, and an id_token without an
+# `email` claim is rejected instead of resolving to an empty address.
+version = "0.5.0"
 authors.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -53,8 +58,9 @@ jsonwebtoken = { version = "11", features = ["aws_lc_rs"], optional = true }
 sha2 = { version = "0.10", optional = true }
 base64 = { workspace = true, optional = true }
 governor = { version = "0.10", optional = true, features = ["std"] }
-# rt + time for the rate limiter's idle-bucket sweeper task.
-tokio = { version = "1", optional = true, features = ["rt", "time"] }
+# rt + time for the rate limiter's idle-bucket sweeper task; sync for the
+# per-session attempt-counter locks.
+tokio = { version = "1", optional = true, features = ["rt", "time", "sync"] }
 chrono = { version = "0.4.43", default-features = false, features = [
     "std",
     "now",
@@ -85,6 +91,12 @@ wasm-bindgen-futures = { version = "0.4", optional = true }
 serde-wasm-bindgen = { version = "0.6", optional = true }
 gloo-timers = { version = "0.4", features = ["futures"], optional = true }
 subtle = "2.6.1"
+
+[dev-dependencies]
+# The attempt-counter tests drive real `Session` handles against an in-memory
+# store, the way concurrent requests carrying one cookie do in production.
+tower-sessions = { version = "0.14", features = ["memory-store"] }
+tokio = { version = "1", features = ["macros", "rt"] }
 
 [features]
 default = []

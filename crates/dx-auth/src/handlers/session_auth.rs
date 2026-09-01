@@ -67,6 +67,49 @@ const DEFERRED_NEW_USER_KEY: &str = "ferriskey.deferred_new_user";
 const PASSWORD_ATTEMPTS_KEY: &str = "password.attempts";
 const MAX_PASSWORD_ATTEMPTS: u32 = 5;
 
+// ── Per-session attempt-counter serialisation ───────────────────────
+//
+// tower-sessions hands every request its own copy of the session record and
+// writes it back when the response completes. Two concurrent requests carrying
+// the same cookie therefore both read `attempts = n` and both write `n + 1`,
+// so a burst of parallel guesses meets the cap once instead of per request.
+// Holding a per-session lock across the read, the compare and an explicit
+// `save` closes that window in-process. Replicas do not share the lock, so
+// the same cookie serviced by N replicas at once can overshoot by at most N
+// passes — bounded by the deployment, not by the attacker's request count.
+//
+// Striped rather than per-id so the table never grows: unrelated sessions
+// that share a stripe only wait on each other for the few store round-trips
+// the guarded section performs.
+
+const SESSION_LOCK_STRIPES: usize = 64;
+static SESSION_LOCKS: [tokio::sync::Mutex<()>; SESSION_LOCK_STRIPES] =
+    [const { tokio::sync::Mutex::const_new(()) }; SESSION_LOCK_STRIPES];
+
+/// Lock the stripe for this session.
+///
+/// Must be taken before the handler's first read of the session: tower-sessions
+/// loads the record lazily and then keeps that copy for the rest of the
+/// request, so a read before the lock is a read of stale state.
+async fn lock_session(session: &tower_sessions::Session) -> tokio::sync::MutexGuard<'static, ()> {
+    let stripe = session
+        .id()
+        .map(|id| (id.0.unsigned_abs() % SESSION_LOCK_STRIPES as u128) as usize)
+        .unwrap_or(0);
+    SESSION_LOCKS[stripe].lock().await
+}
+
+/// Write the session back to the store now, rather than when the response
+/// completes, so the next request for this cookie loads what this one wrote.
+/// A request with no session has nothing to race over, and saving would only
+/// mint an empty record per request.
+async fn persist_now(session: &tower_sessions::Session) -> AuthResult<()> {
+    if session.id().is_some() {
+        session.save().await?;
+    }
+    Ok(())
+}
+
 // ── Bollwark captcha (optional, env-configured) ─────────────────────
 //
 // When all three vars are set, new-user registration is gated by the bollwark
@@ -374,6 +417,18 @@ async fn verify_otp_from_session(
     Ok(bound_email)
 }
 
+/// [`verify_otp_from_session`] under the session lock, with the attempt
+/// counter persisted before the lock is released. See [`SESSION_LOCKS`].
+async fn verify_otp_guarded(
+    session: &tower_sessions::Session,
+    submitted_code: &str,
+) -> AuthResult<std::result::Result<String, String>> {
+    let _guard = lock_session(session).await;
+    let outcome = verify_otp_from_session(session, submitted_code).await;
+    persist_now(session).await?;
+    Ok(outcome)
+}
+
 // ── Flow plumbing ────────────────────────────────────────────────────
 
 async fn store_flow(session: &tower_sessions::Session, flow: &FerrisKeyFlow) -> AuthResult<()> {
@@ -465,11 +520,18 @@ async fn exchange_and_resolve(
         ));
     }
 
+    // Accounts are keyed by address as well as by sub, so an id_token that
+    // carries no email is refused rather than resolved to an empty one.
+    let email = claims.email.filter(|e| !e.is_empty()).ok_or_else(|| {
+        AuthError::ServerStateError("FerrisKey id_token has no email claim".to_string())
+    })?;
+
     Ok(AuthUserInfo {
         sub: claims.sub,
         nickname: None,
         name: None,
-        email: claims.email.unwrap_or_default(),
+        email,
+        email_verified: claims.email_verified.unwrap_or(false),
         picture: None,
         preferred_username: None,
     })
@@ -758,26 +820,37 @@ pub async fn verify_password_handler(
     Json(req): Json<VerifyPasswordRequest>,
 ) -> AuthResult<Json<VerifyResponse>> {
     let fk = FkConfig::from(&auth_config)?;
-    let flow = load_flow(&session).await?;
-
-    let attempts = session
-        .get::<u32>(PASSWORD_ATTEMPTS_KEY)
-        .await?
-        .unwrap_or(0);
-    if attempts >= MAX_PASSWORD_ATTEMPTS {
-        return Ok(Json(VerifyResponse {
-            success: false,
-            redirect_url: None,
-            needs_tos_acceptance: None,
-            error: Some("Too many failed password attempts. Please start a new login.".to_string()),
-            retry_after_seconds: None,
-        }));
-    }
 
     let password = req.password.trim().to_string();
     if password.is_empty() {
         return Err(AuthError::BadRequest("Password is required".to_string()));
     }
+
+    // The attempt is counted before it is made, under the session lock, so
+    // parallel submissions each consume a slot instead of all reading the same
+    // count. A non-failed outcome below hands the slot back.
+    {
+        let _guard = lock_session(&session).await;
+        let attempts = session
+            .get::<u32>(PASSWORD_ATTEMPTS_KEY)
+            .await?
+            .unwrap_or(0);
+        if attempts >= MAX_PASSWORD_ATTEMPTS {
+            return Ok(Json(VerifyResponse {
+                success: false,
+                redirect_url: None,
+                needs_tos_acceptance: None,
+                error: Some(
+                    "Too many failed password attempts. Please start a new login.".to_string(),
+                ),
+                retry_after_seconds: None,
+            }));
+        }
+        session.insert(PASSWORD_ATTEMPTS_KEY, attempts + 1).await?;
+        persist_now(&session).await?;
+    }
+
+    let flow = load_flow(&session).await?;
 
     let email = session
         .get::<String>(LOGIN_EMAIL_KEY)
@@ -795,15 +868,12 @@ pub async fn verify_password_handler(
     .await
     {
         Ok(resp) => {
-            if resp.status == AuthenticationStatus::Failed {
-                let _ = session.insert(PASSWORD_ATTEMPTS_KEY, attempts + 1).await;
-            } else {
+            if resp.status != AuthenticationStatus::Failed {
                 session.remove::<u32>(PASSWORD_ATTEMPTS_KEY).await?;
             }
             handle_oidc_outcome(&auth_state, &auth_config, &session, &flow, resp).await
         }
         Err(e) => {
-            let _ = session.insert(PASSWORD_ATTEMPTS_KEY, attempts + 1).await;
             warn!("Password verification failed: {:?}", e);
             Ok(Json(VerifyResponse {
                 success: false,
@@ -895,7 +965,7 @@ pub async fn verify_otp_handler(
         ));
     }
 
-    match verify_otp_from_session(&session, &code).await {
+    match verify_otp_guarded(&session, &code).await? {
         // `email` is the address the code was mailed to, not `login.email` —
         // the latter is rewritten by every /session/start and proves nothing.
         Ok(email) => {
@@ -988,6 +1058,8 @@ pub async fn verify_otp_handler(
                     Some(user.firstname.clone())
                 },
                 email: email.clone(),
+                // Proven by the code just verified.
+                email_verified: true,
                 picture: None,
                 preferred_username: Some(email.clone()),
             };
@@ -1269,10 +1341,75 @@ pub async fn accept_tos_handler(
 
 #[cfg(test)]
 mod tests {
-    use super::registration_permitted;
+    use super::{
+        CUSTOM_OTP_ATTEMPTS_KEY, CUSTOM_OTP_CODE_KEY, CUSTOM_OTP_EMAIL_KEY,
+        CUSTOM_OTP_EXPIRES_AT_KEY, MAX_OTP_ATTEMPTS, registration_permitted, verify_otp_guarded,
+    };
+    use std::sync::Arc;
+    use tower_sessions::session::{Id, Record};
+    use tower_sessions::{MemoryStore, Session, SessionStore, session_store};
 
     fn v(items: &[&str]) -> Vec<String> {
         items.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// A store whose loads take long enough that every request in a burst
+    /// reads the record before any of them writes it back — the interleaving
+    /// production hits when parallel requests carry one cookie.
+    #[derive(Debug, Default)]
+    struct SlowStore(MemoryStore);
+
+    #[async_trait::async_trait]
+    impl SessionStore for SlowStore {
+        async fn save(&self, record: &Record) -> session_store::Result<()> {
+            self.0.save(record).await
+        }
+        async fn load(&self, id: &Id) -> session_store::Result<Option<Record>> {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            self.0.load(id).await
+        }
+        async fn delete(&self, id: &Id) -> session_store::Result<()> {
+            self.0.delete(id).await
+        }
+    }
+
+    #[tokio::test]
+    async fn parallel_otp_guesses_cannot_exceed_the_attempt_cap() {
+        let store = Arc::new(SlowStore::default());
+
+        let seed = Session::new(None, store.clone(), None);
+        seed.insert(CUSTOM_OTP_CODE_KEY, "123456").await.unwrap();
+        seed.insert(CUSTOM_OTP_EMAIL_KEY, "a@example.com")
+            .await
+            .unwrap();
+        seed.insert(
+            CUSTOM_OTP_EXPIRES_AT_KEY,
+            chrono::Utc::now().timestamp() + 600,
+        )
+        .await
+        .unwrap();
+        seed.insert(CUSTOM_OTP_ATTEMPTS_KEY, 0u32).await.unwrap();
+        seed.save().await.unwrap();
+        let id = seed.id().unwrap();
+
+        // Twenty requests in flight at once, each with its own handle on the
+        // same cookie — the shape tower-sessions gives concurrent requests.
+        let tasks: Vec<_> = (0..20)
+            .map(|_| {
+                let session = Session::new(Some(id), store.clone(), None);
+                tokio::spawn(async move { verify_otp_guarded(&session, "000000").await.unwrap() })
+            })
+            .collect();
+
+        let mut evaluated = 0;
+        for task in tasks {
+            match task.await.unwrap() {
+                Err(msg) if msg.starts_with("Invalid verification code") => evaluated += 1,
+                Err(_) => {} // cap reached, or the code already cleared by it
+                Ok(email) => panic!("wrong code accepted for {email}"),
+            }
+        }
+        assert_eq!(evaluated, MAX_OTP_ATTEMPTS as usize);
     }
 
     #[test]

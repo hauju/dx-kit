@@ -9,7 +9,7 @@ code. FerrisKey is the identity provider; the login screen is yours.
 
 ```toml
 [dependencies]
-dx-auth = { git = "https://github.com/hauju/dx-kit.git", tag = "dx-auth-v0.4.1", features = ["server"] }
+dx-auth = { git = "https://github.com/hauju/dx-kit.git", tag = "dx-auth-v0.5.0", features = ["server"] }
 ```
 
 No default features. Enable `server` (Axum handlers, FerrisKey client, session
@@ -113,6 +113,19 @@ auth endpoints. `rate_limit_store: None` falls back to an in-process limiter,
 which is fine for a single instance and wrong for several — N replicas allow N×
 the quota. Wire a shared store before you scale out. The field is `Option` so
 adopting the crate and wiring the backend can be separate commits.
+
+**OTP and password attempt caps are enforced under a per-session lock,** with
+the counter written back before the lock is released. Without that, parallel
+requests carrying one cookie each read the same count and the cap is met once
+per burst, not per request. The lock is in-process, so N replicas serving the
+same cookie at once can overshoot by at most N passes — a bound set by your
+deployment, not by the attacker.
+
+**An id_token's email may only claim an existing account when the IdP marks it
+`email_verified`.** An unverified match is refused with 401 rather than migrated
+or duplicated, so a FerrisKey user whose address was never verified cannot log
+into a local account that happens to share it. Email-OTP logins count as
+verified by construction.
 
 **`trust_proxy_headers` defaults to `false`.** Only turn it on behind a reverse
 proxy you control; otherwise a client can spoof `X-Forwarded-For` and get a

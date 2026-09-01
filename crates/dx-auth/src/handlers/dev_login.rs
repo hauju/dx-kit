@@ -45,6 +45,7 @@ pub async fn dev_login_handler(
         nickname: None,
         name: Some("Dev User".to_string()),
         email: DEV_EMAIL.to_string(),
+        email_verified: true,
         picture: None,
         preferred_username: Some(DEV_USERNAME.to_string()),
     };
