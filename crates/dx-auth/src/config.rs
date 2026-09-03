@@ -33,6 +33,20 @@ pub struct AuthConfig {
     /// Forwarded headers from an upstream reverse proxy.
     pub trust_proxy_headers: bool,
 
+    // ── SSO (browser-redirect login) ──────────────────────────────
+    /// Mount the browser-redirect login routes (`GET /auth/sso/start`,
+    /// `GET /auth/callback`, `POST /auth/sso/complete`) and end the FerrisKey
+    /// session on logout. The browser is sent to FerrisKey's hosted login page
+    /// and completes the code exchange itself, which is what puts FerrisKey's
+    /// `FERRISKEY_IDENTITY` cookie in the browser: the next app in the same
+    /// realm then logs in without a prompt.
+    ///
+    /// Requires `ferriskey_client_id` to be a **public** FerrisKey client (no
+    /// secret is used), `ferriskey_url` to be reachable from the browser, and
+    /// on the client: `{base_url}/auth/callback` as a redirect URI, web origin
+    /// `+`, and `{base_url}{login_page_url}` as a post-logout redirect URI.
+    pub sso_enabled: bool,
+
     // ── Registration allowlist ─────────────────────────────────────
     /// Exact, lowercased email addresses permitted to self-register.
     /// Empty means no address allowlist (see [`crate::AuthConfig`] docs on the
@@ -56,6 +70,7 @@ impl Default for AuthConfig {
             ferriskey_client_secret: None,
             base_url: "http://localhost:8080".to_string(),
             trust_proxy_headers: false,
+            sso_enabled: false,
             allowed_registration_emails: Vec::new(),
             allowed_registration_domains: Vec::new(),
         }

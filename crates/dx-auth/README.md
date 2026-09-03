@@ -86,19 +86,81 @@ so it inherits the host app's DaisyUI theme rather than shipping its own CSS.
 
 ## Routes
 
-`auth_router` mounts, all `POST`:
+`auth_router` mounts:
 
 ```
-/auth/logout
-/auth/session/start                 email → passkey | password | OTP
-/auth/session/passkey/verify
-/auth/session/password/verify
-/auth/session/otp/verify
-/auth/session/otp/resend
-/auth/session/captcha/verify        new-user registration (bollwark)
-/auth/session/accept-tos
-/auth/dev-login                     debug builds only
+POST /auth/logout
+POST /auth/session/start                 email → passkey | password | OTP
+POST /auth/session/passkey/verify
+POST /auth/session/password/verify
+POST /auth/session/otp/verify
+POST /auth/session/otp/resend
+POST /auth/session/captcha/verify        new-user registration (bollwark)
+POST /auth/session/accept-tos
+POST /auth/dev-login                     debug builds only
+GET  /auth/sso/start?next=               SSO mode only, see below
+GET  /auth/callback
+POST /auth/sso/complete
 ```
+
+## SSO mode (browser redirect)
+
+Apps sharing one FerrisKey realm can share one login. Set `sso_enabled: true`
+and link the login page to `GET /auth/sso/start?next=/dashboard`. The browser
+is sent to FerrisKey's hosted login page instead of the custom `LoginPage` and
+comes back to `GET /auth/callback`, which serves a small page that redeems the
+code **from the browser** and posts the id_token to `POST /auth/sso/complete`.
+The app validates it (JWKS, audience, nonce) and opens the session like any
+other login.
+
+The exchange runs in the browser on purpose: FerrisKey sets its SSO cookie
+(`FERRISKEY_IDENTITY`) on the token endpoint's response and nowhere else, so a
+server-side exchange never gets it into the browser. With the cookie in place,
+the next app's `/auth/sso/start` comes back with a code and no prompt — for as
+long as the client's `access_token_lifetime`, which is what the cookie carries.
+The PKCE verifier and the token response pass through the browser, as for any
+public (SPA) client; the app only ever accepts an id_token with its own
+audience and the nonce it minted for that session.
+
+FerrisKey client checklist, one per app, all in the shared realm:
+
+- **public** client with PKCE required — no secret is used in this mode
+- redirect URI `{base_url}/auth/callback` (exact match)
+- CORS for the browser's token request: on FerrisKey 0.7.x this is the
+  server-wide `ALLOWED_ORIGINS` env of the API container (comma-separated; add
+  `{base_url}`'s origin). Newer FerrisKey has per-client web origins instead,
+  where `+` derives the origin from the redirect URI
+- post-logout redirect URI `{base_url}{login_page_url}` (exact match; the
+  root URL or a trailing slash won't do)
+- `access_token_lifetime` = the silent-SSO window you want (realm default 300 s)
+- users' emails marked verified, or an existing account cannot be re-bound to
+  its new `sub` (see the security notes)
+- no roles, scopes or mappers: the app reads `sub`, `email` and
+  `email_verified` from the default `openid email profile` scope
+
+`ferriskey_url` must be reachable from the browser. Logout redirects through
+FerrisKey's end-session endpoint so the identity cookie is cleared; that only
+works for a **top-level** `POST /auth/logout` (a form submit) — a `fetch`
+follows the redirect without credentials and the cookie survives. Other apps'
+local sessions are not ended; they expire on their own.
+
+Set the tower-sessions cookie to `SameSite=Lax`. The login returns from
+FerrisKey by a top-level redirect, and `Strict` withholds the cookie on any
+cross-site navigation — which includes `localhost` against a hosted IdP — so
+the callback finds no flow. dx-auth's origin check still covers the POSTs.
+
+Two things to know when testing:
+
+- **Silent SSO cannot be observed from `localhost`.** FerrisKey's identity
+  cookie is `SameSite=Lax`, and browsers discard a Lax cookie delivered by a
+  cross-site request; `localhost` → `auth.example` is cross-site, while
+  `app.example` → `auth.example` is not. Logging in works locally, the
+  no-prompt second login only shows on the deployed host.
+- **A FerrisKey console session in the same browser breaks the flow** (0.7.x):
+  the hosted login page restarts the OAuth request with its own random `state`
+  and drops the nonce and PKCE challenge, so the callback answers
+  `Login flow state mismatch`. Log out of the console and retry. The same
+  happens after the page's 10-minute session refresh.
 
 ## Security notes
 

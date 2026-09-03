@@ -1,6 +1,9 @@
 //! Auth route builder.
 
-use axum::{Extension, Router, routing::post};
+use axum::{
+    Extension, Router,
+    routing::{get, post},
+};
 
 use crate::config::AuthConfig;
 use crate::csrf::csrf_origin_check;
@@ -19,6 +22,9 @@ use crate::state::AuthState;
 /// - `POST /auth/session/otp/resend` — Resend OTP code
 /// - `POST /auth/session/captcha/verify` — Verify the captcha for new user registration
 /// - `POST /auth/session/accept-tos` — Accept Terms of Service
+/// - `GET /auth/sso/start` — Browser-redirect login (only with `sso_enabled`)
+/// - `GET /auth/callback` — OIDC redirect target (only with `sso_enabled`)
+/// - `POST /auth/sso/complete` — Finish a browser-redirect login (only with `sso_enabled`)
 ///
 /// Security middleware included:
 /// - **Rate limiting:** 20 requests/minute per IP (via `governor`)
@@ -76,6 +82,17 @@ pub fn auth_router(auth_config: AuthConfig, auth_state: AuthState) -> Router {
     // release builds; also requires DEV_LOGIN=true at runtime.
     #[cfg(debug_assertions)]
     let router = router.route("/auth/dev-login", post(handlers::dev_login_handler));
+
+    // Browser-redirect login against FerrisKey's hosted page (see
+    // handlers::sso). Off by default: nothing is mounted unless the app opts in.
+    let router = if auth_config.sso_enabled {
+        router
+            .route("/auth/sso/start", get(handlers::sso_start))
+            .route("/auth/callback", get(handlers::sso_callback))
+            .route("/auth/sso/complete", post(handlers::sso_complete))
+    } else {
+        router
+    };
 
     router
         // NOTE: axum applies the LAST `.layer()` outermost, so these run in the

@@ -354,7 +354,7 @@ async fn clear_otp_state(session: &tower_sessions::Session) {
 ///
 /// Deliberately keeps the resend throttle and the password-attempt counter:
 /// those are abuse controls, and restarting the flow must not reset them.
-async fn reset_pending_login_state(session: &tower_sessions::Session) {
+pub(super) async fn reset_pending_login_state(session: &tower_sessions::Session) {
     clear_otp_state(session).await;
     let _ = session.remove::<bool>(DEFERRED_NEW_USER_KEY).await;
 }
@@ -431,12 +431,15 @@ async fn verify_otp_guarded(
 
 // ── Flow plumbing ────────────────────────────────────────────────────
 
-async fn store_flow(session: &tower_sessions::Session, flow: &FerrisKeyFlow) -> AuthResult<()> {
+pub(super) async fn store_flow(
+    session: &tower_sessions::Session,
+    flow: &FerrisKeyFlow,
+) -> AuthResult<()> {
     session.insert(FLOW_KEY, flow).await?;
     Ok(())
 }
 
-async fn load_flow(session: &tower_sessions::Session) -> AuthResult<FerrisKeyFlow> {
+pub(super) async fn load_flow(session: &tower_sessions::Session) -> AuthResult<FerrisKeyFlow> {
     session
         .get::<FerrisKeyFlow>(FLOW_KEY)
         .await?
@@ -490,34 +493,41 @@ async fn exchange_and_resolve(
     )
     .await?;
 
-    // Validate the id_token via JWKS so we can trust `sub`/`email`. If id_token
-    // is missing we fall back to looking the user up by email after the fact.
     let id_token = tokens
         .id_token
         .ok_or_else(|| AuthError::ServerStateError("FerrisKey returned no id_token".to_string()))?;
-    let claims = jwks.validate_token(&id_token).await.map_err(|e| {
+    resolve_id_token(jwks, flow, &id_token).await
+}
+
+/// Validate an id_token against JWKS and bind it to `flow` through the nonce.
+///
+/// The nonce is what ties the token to this login attempt, so when the flow
+/// carries one the claim must be present and equal — a token minted for some
+/// other flow, or one that lost its nonce, is refused. In SSO mode the
+/// id_token arrives from the browser, so this is the only binding there is.
+pub(super) async fn resolve_id_token(
+    jwks: &crate::jwt::JwksCache,
+    flow: &FerrisKeyFlow,
+    id_token: &str,
+) -> AuthResult<AuthUserInfo> {
+    let claims = jwks.validate_token(id_token).await.map_err(|e| {
         AuthError::ServerStateError(format!("Failed to validate FerrisKey id_token: {e}"))
     })?;
 
-    // If FerrisKey echoed a `nonce` claim, it MUST equal the per-flow nonce
-    // we sent on `/auth` — otherwise the id_token belongs to a different
-    // login attempt. We don't *require* the claim to be present: FerrisKey
-    // (current versions) doesn't always include it, and the practical
-    // code-flow replay surface is already covered by `state` + PKCE +
-    // server-side code redemption. When FerrisKey starts emitting nonce,
-    // this check kicks in automatically.
-    if let (Some(expected_nonce), Some(returned_nonce)) =
-        (flow.nonce.as_deref(), claims.nonce.as_deref())
-        && returned_nonce
-            .as_bytes()
-            .ct_eq(expected_nonce.as_bytes())
-            .unwrap_u8()
-            != 1
-    {
-        warn!("FerrisKey id_token nonce mismatch — possible token replay");
-        return Err(AuthError::Unauthorized(
-            "Login flow nonce mismatch — please retry".to_string(),
-        ));
+    if let Some(expected_nonce) = flow.nonce.as_deref() {
+        let matches = claims.nonce.as_deref().is_some_and(|returned| {
+            returned
+                .as_bytes()
+                .ct_eq(expected_nonce.as_bytes())
+                .unwrap_u8()
+                == 1
+        });
+        if !matches {
+            warn!("FerrisKey id_token nonce missing or mismatched — possible token replay");
+            return Err(AuthError::Unauthorized(
+                "Login flow nonce mismatch — please retry".to_string(),
+            ));
+        }
     }
 
     // Accounts are keyed by address as well as by sub, so an id_token that
@@ -1219,12 +1229,12 @@ pub async fn verify_captcha_handler(
 
 // ── Finalize login ──────────────────────────────────────────────────
 
-struct FinalizeResult {
-    redirect_url: Option<String>,
-    needs_tos_acceptance: bool,
+pub(super) struct FinalizeResult {
+    pub(super) redirect_url: Option<String>,
+    pub(super) needs_tos_acceptance: bool,
 }
 
-async fn finalize_login(
+pub(super) async fn finalize_login(
     auth_state: &AuthState,
     auth_config: &AuthConfig,
     session: &tower_sessions::Session,

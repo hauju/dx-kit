@@ -105,31 +105,9 @@ pub async fn start_auth_flow(
     client_id: &str,
     base_url: &str,
 ) -> AuthResult<FerrisKeyFlow> {
-    let state = generate_state();
-    let nonce = generate_nonce();
-    let code_verifier = generate_pkce_verifier();
-    let code_challenge = pkce_challenge(&code_verifier);
-    let redirect_uri = format!(
-        "{}{}",
-        base_url.trim_end_matches('/'),
-        REDIRECT_URI_PLACEHOLDER
-    );
-
-    let url = realm_url(base, realm, "/protocol/openid-connect/auth");
-    let resp = http()
-        .get(&url)
-        .query(&[
-            ("response_type", "code"),
-            ("client_id", client_id),
-            ("redirect_uri", redirect_uri.as_str()),
-            ("scope", "openid email profile"),
-            (STATE_PARAM, state.as_str()),
-            ("nonce", nonce.as_str()),
-            ("code_challenge", code_challenge.as_str()),
-            ("code_challenge_method", "S256"),
-        ])
-        .send()
-        .await?;
+    let flow = new_flow();
+    let url = authorize_url(base, realm, client_id, base_url, &flow)?;
+    let resp = http().get(&url).send().await?;
 
     let status = resp.status();
     if !status.is_redirection() && !status.is_success() {
@@ -161,10 +139,7 @@ pub async fn start_auth_flow(
 
     Ok(FerrisKeyFlow {
         session_code,
-        state,
-        temp_token: None,
-        code_verifier: Some(code_verifier),
-        nonce: Some(nonce),
+        ..flow
     })
 }
 
@@ -282,11 +257,7 @@ pub async fn exchange_code(
     code_verifier: &str,
     base_url: &str,
 ) -> AuthResult<OidcTokenResponse> {
-    let redirect_uri = format!(
-        "{}{}",
-        base_url.trim_end_matches('/'),
-        REDIRECT_URI_PLACEHOLDER
-    );
+    let redirect_uri = redirect_uri(base_url);
     let form: Vec<(&str, &str)> = vec![
         ("grant_type", "authorization_code"),
         ("code", code),
@@ -295,8 +266,11 @@ pub async fn exchange_code(
         ("redirect_uri", redirect_uri.as_str()),
         ("code_verifier", code_verifier),
     ];
-    let url = realm_url(base, realm, "/protocol/openid-connect/token");
-    let resp = http().post(&url).form(&form).send().await?;
+    let resp = http()
+        .post(token_url(base, realm))
+        .form(&form)
+        .send()
+        .await?;
     json_or_error(resp, "exchange_code").await
 }
 
@@ -581,4 +555,142 @@ fn generate_pkce_verifier() -> String {
 fn pkce_challenge(verifier: &str) -> String {
     let digest = Sha256::digest(verifier.as_bytes());
     URL_SAFE_NO_PAD.encode(digest)
+}
+
+// ── Authorization request / end-session URLs ─────────────────────────
+
+/// A fresh flow with `state`, `nonce` and the PKCE verifier minted, and no
+/// FerrisKey session yet.
+pub(crate) fn new_flow() -> FerrisKeyFlow {
+    FerrisKeyFlow {
+        session_code: String::new(),
+        state: generate_state(),
+        temp_token: None,
+        code_verifier: Some(generate_pkce_verifier()),
+        nonce: Some(generate_nonce()),
+    }
+}
+
+/// `{base_url}/auth/callback` — the redirect URI registered on the client.
+pub(crate) fn redirect_uri(base_url: &str) -> String {
+    format!(
+        "{}{}",
+        base_url.trim_end_matches('/'),
+        REDIRECT_URI_PLACEHOLDER
+    )
+}
+
+/// The realm's token endpoint.
+pub(crate) fn token_url(base: &str, realm: &str) -> String {
+    realm_url(base, realm, "/protocol/openid-connect/token")
+}
+
+fn absolute(url: String) -> AuthResult<url::Url> {
+    url::Url::parse(&url)
+        .map_err(|e| AuthError::ServerStateError(format!("Invalid FerrisKey URL {url:?}: {e}")))
+}
+
+/// The authorization request for `flow`: what `start_auth_flow` fetches
+/// server-side, and where SSO mode sends the browser.
+pub(crate) fn authorize_url(
+    base: &str,
+    realm: &str,
+    client_id: &str,
+    base_url: &str,
+    flow: &FerrisKeyFlow,
+) -> AuthResult<String> {
+    let nonce = flow
+        .nonce
+        .as_deref()
+        .ok_or_else(|| AuthError::ServerStateError("Login flow missing nonce".to_string()))?;
+    let code_verifier = flow.code_verifier.as_deref().ok_or_else(|| {
+        AuthError::ServerStateError("Login flow missing PKCE verifier".to_string())
+    })?;
+    let mut url = absolute(realm_url(base, realm, "/protocol/openid-connect/auth"))?;
+    url.query_pairs_mut()
+        .append_pair("response_type", "code")
+        .append_pair("client_id", client_id)
+        .append_pair("redirect_uri", &redirect_uri(base_url))
+        .append_pair("scope", "openid email profile")
+        .append_pair(STATE_PARAM, &flow.state)
+        .append_pair("nonce", nonce)
+        .append_pair("code_challenge", &pkce_challenge(code_verifier))
+        .append_pair("code_challenge_method", "S256");
+    Ok(url.into())
+}
+
+/// FerrisKey's end-session endpoint: clears its `FERRISKEY_SESSION` and
+/// `FERRISKEY_IDENTITY` cookies and 307s to `post_logout_redirect_uri`, which
+/// must be registered on the client (exact match).
+pub(crate) fn logout_url(
+    base: &str,
+    realm: &str,
+    client_id: &str,
+    post_logout_redirect_uri: &str,
+) -> AuthResult<String> {
+    let mut url = absolute(realm_url(base, realm, "/protocol/openid-connect/logout"))?;
+    url.query_pairs_mut()
+        .append_pair("client_id", client_id)
+        .append_pair("post_logout_redirect_uri", post_logout_redirect_uri);
+    Ok(url.into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    #[test]
+    fn pkce_challenge_matches_the_rfc_7636_vector() {
+        assert_eq!(
+            pkce_challenge("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"),
+            "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+        );
+    }
+
+    #[test]
+    fn authorize_url_carries_the_whole_code_flow_request() {
+        let flow = new_flow();
+        let url = authorize_url(
+            "https://idp.example/api/",
+            "oxidt",
+            "dx-seo",
+            "https://app.example/",
+            &flow,
+        )
+        .unwrap();
+        let parsed = url::Url::parse(&url).unwrap();
+        assert_eq!(
+            parsed.path(),
+            "/api/realms/oxidt/protocol/openid-connect/auth"
+        );
+        let q: HashMap<String, String> = parsed.query_pairs().into_owned().collect();
+        assert_eq!(q["response_type"], "code");
+        assert_eq!(q["client_id"], "dx-seo");
+        assert_eq!(q["redirect_uri"], "https://app.example/auth/callback");
+        assert_eq!(q["scope"], "openid email profile");
+        assert_eq!(q["state"], flow.state);
+        assert_eq!(q["nonce"], flow.nonce.clone().unwrap());
+        assert_eq!(
+            q["code_challenge"],
+            pkce_challenge(flow.code_verifier.as_deref().unwrap())
+        );
+        assert_eq!(q["code_challenge_method"], "S256");
+    }
+
+    #[test]
+    fn logout_url_encodes_the_return_address() {
+        let url = logout_url(
+            "http://localhost:3333",
+            "oxidt",
+            "dx-seo",
+            "http://localhost:8080/login",
+        )
+        .unwrap();
+        assert_eq!(
+            url,
+            "http://localhost:3333/realms/oxidt/protocol/openid-connect/logout\
+             ?client_id=dx-seo&post_logout_redirect_uri=http%3A%2F%2Flocalhost%3A8080%2Flogin"
+        );
+    }
 }
