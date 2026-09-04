@@ -17,6 +17,14 @@ pub trait AuthUserStore: Send + Sync + 'static {
     /// Find a user by email address.
     async fn get_user_by_email(&self, email: &str) -> AuthResult<Option<AuthUser>>;
 
+    /// Find a user by the store's own id (`AuthUser.id`).
+    ///
+    /// The self-owned login's conditional-UI (autofill) passkey path resolves
+    /// the account from the credential row's `user_id`, with no email in hand.
+    /// Only the `local-login` flow calls it, so only that feature requires it.
+    #[cfg(feature = "local-login")]
+    async fn get_user_by_id(&self, id: &str) -> AuthResult<Option<AuthUser>>;
+
     /// Create a new user and return the created user (with generated ID).
     async fn create_user(&self, user: NewAuthUser) -> AuthResult<AuthUser>;
 

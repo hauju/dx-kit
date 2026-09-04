@@ -29,6 +29,8 @@ jobs:
         run: cargo clippy -p dx-auth --features server,web --all-targets -- -D warnings
       - name: dx-auth with passkey-rp
         run: cargo clippy -p dx-auth --features passkey-rp,web --all-targets -- -D warnings
+      - name: dx-auth local-login without FerrisKey wiring
+        run: cargo clippy -p dx-auth --features local-login,web --all-targets -- -D warnings
       - name: dx-auth server-only (no web)
         run: cargo check -p dx-auth --features server
       - name: dx-umami client bridge on the target it actually ships to

@@ -162,6 +162,75 @@ Two things to know when testing:
   `Login flow state mismatch`. Log out of the console and retry. The same
   happens after the page's 10-minute session refresh.
 
+## Local mode (no identity provider)
+
+The `local-login` feature runs the crate without FerrisKey at all: email OTP
+(which also registers) plus passkeys verified by the app's own WebAuthn Relying
+Party. No passwords. It implies `passkey-rp`, so the app supplies an
+`AuthPasskeyStore`, and `AuthUserStore` gains one required method,
+`get_user_by_id` (the passkey-autofill path has a credential row and no email).
+
+```toml
+auth = { package = "dx-auth", git = "…/dx-kit.git", tag = "dx-auth-v0.7.0", optional = true }
+
+[features]
+server = ["auth/server", "auth/local-login", ...]
+web    = ["auth/web", ...]
+```
+
+```rust
+use dx_auth::{local_auth_router, AuthConfig, AuthState};
+
+let config = AuthConfig {
+    login_page_url: "/login".into(),
+    default_post_login_url: "/dashboard".into(),
+    base_url: "https://app.example.com".into(), // also the passkey RP ID
+    allowed_registration_emails: admin_emails,   // see below
+    ..Default::default()
+};
+let state = AuthState::local(
+    Arc::new(MyUserStore::new(db.clone())),
+    Arc::new(MyEmailSender::new(smtp.clone())),
+    Arc::new(MyPasskeyStore::new(db.clone())),
+);
+let app = my_router.merge(local_auth_router(config, state));
+```
+
+Mount `local_auth_router` *instead of* `auth_router` — both own
+`/auth/session/*`. On the UI side render `LocalLoginPage { redirect_url,
+app_name, logo_src, captcha_config }`; it adds passkey autofill (conditional
+UI), an explicit "Sign in with a passkey" button, and a one-time enrollment
+offer after an OTP login.
+
+```
+POST /auth/session/start                        email → passkey options | OTP
+POST /auth/session/otp/verify                   creates the account if new
+POST /auth/session/otp/resend
+POST /auth/session/passkey/verify
+POST /auth/session/passkey/conditional/options  discoverable (autofill) request
+POST /auth/session/passkey-fallback-otp         cancelled ceremony → OTP
+POST /auth/session/captcha/verify               only when CAPTCHA_* is set
+POST /auth/passkey/enroll/options|verify
+POST /auth/logout
+```
+
+**Registration is closed by default**, exactly as in FerrisKey mode: set
+`allowed_registration_emails` / `allowed_registration_domains`, or leave both
+empty and only the very first account may register (first-run bootstrap). A
+verified OTP for an allowlisted, unknown address creates the account; `sub` is
+minted by the crate (an opaque random token) and never rewritten afterwards.
+
+**Passkey RP ID.** Derived from `base_url`'s host. A credential only works
+against the RP ID it was registered under, so moving the app to another host
+invalidates every enrolled passkey.
+
+The page leaves a few optional styling hooks for the host stylesheet:
+`.auth-bg`, `.auth-card`, and the `animate-scale-in` / `animate-step-in` /
+`animate-alert-in` / `animate-pulse-glow` utilities. It renders fine without
+them. Because the page lives in a git dependency, Tailwind cannot scan its
+classes — keep a safelist file in the app (dx-admin's `safelist-dx-auth.html`
+is one) and add it as an `@source`.
+
 ## Security notes
 
 **Middleware order is load-bearing.** Axum applies the last `.layer()`
@@ -226,14 +295,15 @@ If the bundle takes too long, the page reveals a stall notice styled by a
 reveal, since if the bundle never arrives there is no Rust running to notice).
 Without the class the notice just appears immediately; nothing breaks.
 
-## Not in this crate yet
+## The seam between the two modes
 
-**A self-owned WebAuthn Relying Party.** Passkeys here are verified through
-FerrisKey. Running your own RP instead — needed when FerrisKey's RP ID doesn't
-match your origin, or when email-OTP accounts can't obtain the user JWT its
-enrollment requires — is planned behind a `passkey-rp` feature. It is the seam
-between "FerrisKey is the IdP" and "this app is its own IdP", and it wants
-designing rather than bolting on.
+`passkey-rp` (0.2.0) made the app its own WebAuthn Relying Party while still
+logging in through FerrisKey; `local-login` (0.7.0) builds on it to drop the IdP
+entirely. The two login back-ends are separate handler modules with separate
+pages, sharing the OTP core (attempt cap under a per-session lock, recipient
+binding, captcha), the registration allowlist, sessions, CSRF, rate limiting
+and the RP. The FerrisKey `LoginPage` does not yet have the local page's
+passkey autofill or enrollment offer.
 
 ## License
 

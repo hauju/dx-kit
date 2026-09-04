@@ -1,8 +1,13 @@
 //! HTTP handlers for authentication flows.
 
+mod otp;
 mod session_auth;
 mod shared;
 mod sso;
+
+/// Self-owned login: email OTP + passkeys, no identity provider.
+#[cfg(feature = "local-login")]
+pub mod local_login;
 
 #[cfg(debug_assertions)]
 mod dev_login;

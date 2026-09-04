@@ -28,7 +28,13 @@ name = "dx-auth"
 # `GET /auth/callback` and `POST /auth/sso/complete`; logout then ends the
 # FerrisKey session too. Breaking: `AuthConfig` gains `sso_enabled`, and an
 # id_token whose `nonce` is missing or wrong is now rejected.
-version = "0.6.0"
+# 0.7.0 adds the `local-login` feature: a self-owned login flow (email OTP +
+# passkeys via the app's own Relying Party, no identity provider), folded in
+# from dx-admin's fork. Mounts `local_auth_router` and renders `LocalLoginPage`;
+# the OTP core (attempt cap under the session lock, recipient binding, captcha)
+# is now shared with the FerrisKey flow. Additive: with the feature off nothing
+# changes. With it on, `AuthUserStore` gains a required `get_user_by_id`.
+version = "0.7.0"
 authors.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -131,6 +137,11 @@ server = [
 # Additive, not an alternative: seggwat runs this alongside FerrisKey login.
 # Requires `server`, and an `AuthPasskeyStore` on `AuthState`.
 passkey-rp = ["server", "dep:ring", "dep:ciborium"]
+# Self-owned login: email OTP + passkeys, no identity provider. The app is its
+# own Relying Party (implies `passkey-rp`) and mounts `local_auth_router` in
+# place of `auth_router`. Additive at the crate level — the FerrisKey flow still
+# compiles — but the two routers own the same paths, so an app mounts one.
+local-login = ["passkey-rp"]
 web = [
     "dep:dioxus",
     "dep:web-sys",

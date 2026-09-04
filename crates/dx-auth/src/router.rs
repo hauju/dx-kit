@@ -1,5 +1,7 @@
 //! Auth route builder.
 
+#[cfg(feature = "local-login")]
+use axum::extract::DefaultBodyLimit;
 use axum::{
     Extension, Router,
     routing::{get, post},
@@ -108,6 +110,79 @@ pub fn auth_router(auth_config: AuthConfig, auth_state: AuthState) -> Router {
         // 1st: CSRF — validate Origin/Referer on POST requests.
         .layer(axum::middleware::from_fn(csrf_origin_check))
         // AuthConfig and AuthState available to all handlers via Extension
+        .layer(Extension(auth_config))
+        .layer(Extension(auth_state))
+}
+
+/// Every auth request body is small — an email, a six-digit code, or one
+/// WebAuthn credential. This bounds the attacker-controlled CBOR that the
+/// enrollment path decodes, which is the only place we parse a nested binary
+/// format from an unauthenticated caller.
+#[cfg(feature = "local-login")]
+const AUTH_BODY_LIMIT: usize = 64 * 1024;
+
+/// Builds a Router for the self-owned login flow — no identity provider, no
+/// passwords. Mount this *instead of* [`auth_router`]: both own the same
+/// `/auth/session/*` paths.
+///
+/// Routes included:
+/// - `POST /auth/session/start` — email in; passkey options or an emailed OTP out
+/// - `POST /auth/session/otp/verify` — verify the code; creates the account if new
+/// - `POST /auth/session/otp/resend` — throttled resend
+/// - `POST /auth/session/passkey/verify` — verify a WebAuthn assertion
+/// - `POST /auth/session/passkey/conditional/options` — autofill (discoverable) options
+/// - `POST /auth/session/passkey-fallback-otp` — cancelled ceremony falls back to OTP
+/// - `POST /auth/session/captcha/verify` — registration gate, only when configured
+/// - `POST /auth/passkey/enroll/options|verify` — enroll a passkey while logged in
+/// - `POST /auth/logout`
+/// - `POST /auth/dev-login` — debug builds only
+///
+/// Security middleware is the same as [`auth_router`] plus a 64 KiB body limit.
+#[cfg(feature = "local-login")]
+pub fn local_auth_router(auth_config: AuthConfig, auth_state: AuthState) -> Router {
+    use handlers::local_login as local;
+
+    let rate_limiter = AuthRateLimiter::new(rate_limit::AUTH_REQUESTS_PER_MINUTE);
+
+    let router = Router::new()
+        .route("/auth/logout", post(session::logout))
+        .route("/auth/session/start", post(local::start_session))
+        .route("/auth/session/otp/verify", post(local::verify_otp_handler))
+        .route("/auth/session/otp/resend", post(local::resend_otp_handler))
+        .route(
+            "/auth/session/passkey/verify",
+            post(local::verify_passkey_handler),
+        )
+        .route(
+            "/auth/session/passkey/conditional/options",
+            post(local::passkey_conditional_options),
+        )
+        .route(
+            "/auth/session/passkey-fallback-otp",
+            post(local::passkey_fallback_to_otp),
+        )
+        .route(
+            "/auth/session/captcha/verify",
+            post(local::verify_captcha_handler),
+        )
+        .route(
+            "/auth/passkey/enroll/options",
+            post(handlers::passkey_enroll_options),
+        )
+        .route(
+            "/auth/passkey/enroll/verify",
+            post(handlers::passkey_enroll_verify),
+        );
+
+    #[cfg(debug_assertions)]
+    let router = router.route("/auth/dev-login", post(handlers::dev_login_handler));
+
+    router
+        // Same ordering as `auth_router`: CSRF runs first, then rate limiting.
+        .layer(axum::middleware::from_fn(rate_limit_middleware))
+        .layer(Extension(rate_limiter))
+        .layer(axum::middleware::from_fn(csrf_origin_check))
+        .layer(DefaultBodyLimit::max(AUTH_BODY_LIMIT))
         .layer(Extension(auth_config))
         .layer(Extension(auth_state))
 }

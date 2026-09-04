@@ -30,3 +30,29 @@ pub struct AuthState {
     #[cfg(feature = "passkey-rp")]
     pub passkey_store: Arc<dyn crate::traits::AuthPasskeyStore>,
 }
+
+#[cfg(feature = "local-login")]
+impl AuthState {
+    /// State for the self-owned login flow (`local_auth_router`): no identity
+    /// provider, so no JWKS to validate against.
+    ///
+    /// `jwks_cache` is a required field because the FerrisKey handlers read it,
+    /// and making it optional would break every adopter that fills it. The
+    /// cache is lazy — nothing is fetched until a token is validated, which the
+    /// local flow never does — so an inert one keeps the type honest for the
+    /// FerrisKey path without costing the local one anything. Set
+    /// `rate_limit_store` afterwards if the app has a shared one.
+    pub fn local(
+        user_store: Arc<dyn AuthUserStore>,
+        email_sender: Arc<dyn AuthEmailSender>,
+        passkey_store: Arc<dyn crate::traits::AuthPasskeyStore>,
+    ) -> Self {
+        Self {
+            user_store,
+            email_sender,
+            jwks_cache: Arc::new(JwksCache::new("", "", "", "")),
+            rate_limit_store: None,
+            passkey_store,
+        }
+    }
+}
