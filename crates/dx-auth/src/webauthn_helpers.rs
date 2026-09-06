@@ -179,15 +179,22 @@ pub async fn browser_get_passkey_conditional(
     poll_passkey_result("__auth_cond_result", "__auth_cond_error", 3000).await
 }
 
+/// Fire the abort without waiting for the browser to release the ceremony —
+/// for teardown paths (component drop) that cannot await. Anything that goes
+/// on to start a modal request must use [`abort_conditional_passkey`].
+pub fn abort_conditional_passkey_now() {
+    let _ = js_sys::eval(
+        "if (window.__auth_cond_abort) { window.__auth_cond_abort.abort(); window.__auth_cond_abort = undefined; }",
+    );
+}
+
 /// Abort a pending conditional ceremony and **wait until the browser has
 /// actually released it** (no-op when none is pending). `abort()` settles the
 /// request asynchronously — a modal `navigator.credentials.get()` issued
 /// before that lands is rejected with "A request is already pending", so
 /// callers must await this before starting one.
 pub async fn abort_conditional_passkey() {
-    let _ = js_sys::eval(
-        "if (window.__auth_cond_abort) { window.__auth_cond_abort.abort(); window.__auth_cond_abort = undefined; }",
-    );
+    abort_conditional_passkey_now();
     // Poll the pending flag for up to ~2s; the AbortError handler clears it.
     for _ in 0..40 {
         let pending = js_sys::eval("!!window.__auth_cond_pending")

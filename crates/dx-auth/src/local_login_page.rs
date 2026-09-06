@@ -133,6 +133,12 @@ pub fn LocalLoginPage(
     // WebAuthn requests) and restarts if the user comes back to this step.
     let mut conditional_running = use_signal(|| false);
     let mut conditional_disabled = use_signal(|| false);
+    // The parked browser request outlives this component: leaving the page
+    // through the router (not a full navigation) would keep it pending and
+    // block every later modal ceremony in the same document, such as a
+    // settings-page enrollment.
+    #[cfg(feature = "web")]
+    use_drop(crate::webauthn_helpers::abort_conditional_passkey_now);
     #[cfg(feature = "web")]
     use_effect(use_reactive!(|step| {
         // `use_reactive!` closures don't take `mut` params — rebind.
@@ -162,6 +168,13 @@ pub fn LocalLoginPage(
             let outcome: Result<(), String> = async {
                 let opts: OptionsResp =
                     wasm_post_json("/auth/session/passkey/conditional/options", None).await?;
+                // A modal ceremony may have started while the options were in
+                // flight (button click, email submit). Its abort found nothing
+                // to abort yet, so starting the browser request now would be
+                // the one that collides ("A request is already pending").
+                if stale() {
+                    return Ok(());
+                }
                 let assertion = crate::webauthn_helpers::browser_get_passkey_conditional(
                     &opts.options.to_string(),
                 )
