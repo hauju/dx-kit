@@ -216,9 +216,10 @@ POST /auth/logout
 
 **Registration is closed by default**, exactly as in FerrisKey mode: set
 `allowed_registration_emails` / `allowed_registration_domains`, or leave both
-empty and only the very first account may register (first-run bootstrap). A
-verified OTP for an allowlisted, unknown address creates the account; `sub` is
-minted by the crate (an opaque random token) and never rewritten afterwards.
+empty and only the very first account may register (first-run bootstrap).
+`open_registration: true` lifts both for a public sign-up. A verified OTP for
+a permitted, unknown address creates the account; `sub` is minted by the crate
+(an opaque random token) and never rewritten afterwards.
 
 **Passkey RP ID.** Derived from `base_url`'s host. A credential only works
 against the RP ID it was registered under, so moving the app to another host
@@ -277,7 +278,9 @@ in the email form, pre-solving while the user types; the token is verified
 server-to-server and fails closed on a missing token, a rejection, or an
 unreachable captcha server. With those vars unset there is no captcha and the
 registration allowlist is the only gate — fine for an internal deployment,
-not for a public one.
+not for a public one. A public product sets `open_registration: true` on
+`AuthConfig`, which admits every address and leaves the captcha as the whole
+gate.
 
 **reqwest is built on rustls**, not native-tls, to keep OpenSSL out of slim
 runtime images.

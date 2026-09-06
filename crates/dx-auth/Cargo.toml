@@ -37,7 +37,11 @@ name = "dx-auth"
 # 0.7.1 bounds every auth request body at 64 KiB on the FerrisKey router too
 # (the local router already did), and quiets the server-only build warnings
 # in `LoginPage`. No API change.
-version = "0.7.1"
+# 0.8.0 adds `AuthConfig::open_registration` for public products: every address
+# may create an account, overriding the allowlists and the first-run bootstrap
+# rule, so a public sign-up no longer has to answer `has_any_users` with a lie.
+# Breaking: `AuthConfig` gains a required field.
+version = "0.8.0"
 authors.workspace = true
 edition.workspace = true
 license.workspace = true

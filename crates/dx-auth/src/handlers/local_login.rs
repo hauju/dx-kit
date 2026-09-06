@@ -336,11 +336,18 @@ pub async fn start_session(
                 captcha_site_key: Some(cfg.site_key),
             }))
         } else {
-            // No captcha deployment: the registration allowlist is the whole
-            // gate. It is closed by default and re-checked at account creation.
-            warn!(
-                "No captcha configured; registration for '{email}' is gated by the allowlist alone"
-            );
+            // No captcha deployment: the registration gate is the whole gate.
+            // The allowlist is closed by default and re-checked at account
+            // creation; `open_registration` leaves nothing in front of it.
+            if auth_config.open_registration {
+                warn!(
+                    "No captcha configured and registration is open; nothing gates account creation for '{email}'"
+                );
+            } else {
+                warn!(
+                    "No captcha configured; registration for '{email}' is gated by the allowlist alone"
+                );
+            }
             send_otp_session(&auth_state, &session, &email, true).await
         };
     };

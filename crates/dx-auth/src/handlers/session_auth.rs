@@ -452,14 +452,21 @@ pub async fn start_session(
             }));
         }
 
-        // No captcha deployment: the registration allowlist is the whole gate.
-        // It is closed by default and re-checked at account creation, so an
-        // internal deployment stays usable without a captcha server, while a
-        // public one is expected to set CAPTCHA_URL.
-        warn!(
-            "No captcha configured; registration for '{}' is gated by the allowlist alone",
-            email
-        );
+        // No captcha deployment: the registration gate is the whole gate. The
+        // allowlist is closed by default and re-checked at account creation, so
+        // an internal deployment stays usable without a captcha server, while a
+        // public one (`open_registration`) is expected to set CAPTCHA_URL.
+        if auth_config.open_registration {
+            warn!(
+                "No captcha configured and registration is open; nothing gates account creation for '{}'",
+                email
+            );
+        } else {
+            warn!(
+                "No captcha configured; registration for '{}' is gated by the allowlist alone",
+                email
+            );
+        }
         send_otp_session(&auth_state, &session, &email, true).await
     }
 }

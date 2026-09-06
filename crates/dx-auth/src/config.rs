@@ -55,6 +55,11 @@ pub struct AuthConfig {
     /// Lowercased email domains (the part after `@`) permitted to self-register.
     /// Empty means no domain allowlist.
     pub allowed_registration_domains: Vec<String>,
+    /// Open self-registration to every address, for a public product where
+    /// anyone may sign up. Overrides both allowlists and the first-run
+    /// bootstrap rule. Pair it with a captcha (`CAPTCHA_URL` and friends):
+    /// with that unset, nothing stands in front of account creation.
+    pub open_registration: bool,
 }
 
 impl Default for AuthConfig {
@@ -73,6 +78,7 @@ impl Default for AuthConfig {
             sso_enabled: false,
             allowed_registration_emails: Vec::new(),
             allowed_registration_domains: Vec::new(),
+            open_registration: false,
         }
     }
 }

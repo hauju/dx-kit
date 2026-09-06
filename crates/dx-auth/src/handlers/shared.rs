@@ -237,12 +237,17 @@ pub async fn determine_post_login_redirect(
 /// allowlist of exact addresses and/or domains; when neither is configured,
 /// registration is permitted only while no user exists yet (first-run
 /// bootstrap) and refused afterwards, so a fresh deployment is usable without
-/// configuration but does not stay open to the internet.
+/// configuration but does not stay open to the internet. A public product sets
+/// `open_registration` instead, which admits every address.
 pub(super) async fn registration_allowed(
     auth_state: &AuthState,
     auth_config: &AuthConfig,
     email: &str,
 ) -> AuthResult<bool> {
+    if auth_config.open_registration {
+        return Ok(true);
+    }
+
     let emails = &auth_config.allowed_registration_emails;
     let domains = &auth_config.allowed_registration_domains;
 
@@ -285,8 +290,8 @@ fn registration_permitted(
 #[cfg(test)]
 mod tests {
     use super::{
-        AuthUserInfo, is_safe_redirect_url, is_valid_email, lookup_or_create_user,
-        registration_permitted,
+        AuthConfig, AuthUserInfo, is_safe_redirect_url, is_valid_email, lookup_or_create_user,
+        registration_allowed, registration_permitted,
     };
     use crate::error::{AuthError, AuthResult};
     use crate::state::AuthState;
@@ -588,6 +593,26 @@ mod tests {
             "someone@example.com",
             false
         ));
+    }
+
+    #[tokio::test]
+    async fn open_registration_admits_every_address() {
+        // `OneUserStore` keeps the trait's fail-safe `has_any_users` (true) and
+        // no allowlist is set, so without the switch this address is refused.
+        let store = Arc::new(OneUserStore::default());
+        let mut config = AuthConfig::default();
+        assert!(
+            !registration_allowed(&state(store.clone()), &config, "anyone@example.com")
+                .await
+                .unwrap()
+        );
+
+        config.open_registration = true;
+        assert!(
+            registration_allowed(&state(store), &config, "anyone@example.com")
+                .await
+                .unwrap()
+        );
     }
 
     #[test]
