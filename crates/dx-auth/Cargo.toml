@@ -37,7 +37,7 @@ name = "dx-auth"
 # 0.7.1 bounds every auth request body at 64 KiB on the FerrisKey router too
 # (the local router already did), and quiets the server-only build warnings
 # in `LoginPage`. No API change.
-version = "0.7.2"
+version = "0.7.3"
 authors.workspace = true
 edition.workspace = true
 license.workspace = true
