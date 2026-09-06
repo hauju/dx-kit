@@ -10,11 +10,12 @@ own copy, so a fix lands once instead of once per app.
 | [`dx-smtp`](crates/dx-smtp) | Lettre-backed SMTP — pooled sync/async clients with retry and timeouts, plus a one-shot per-tenant sender |
 | [`dx-auth`](crates/dx-auth) | FerrisKey OIDC, custom login UI (passkey / password / email-OTP), sessions, CSRF, rate limiting, and an optional self-owned WebAuthn Relying Party |
 | [`dx-umami`](crates/dx-umami) | self-hosted Umami analytics — same-origin tracker proxy (ad-blocker bypass, forwards `X-Forwarded-For` so countries survive), client event bridge with numeric revenue props, session identify, script mount |
+| [`dx-s3`](crates/dx-s3) | S3-compatible object storage with its own SigV4 signer over the kit's reqwest stack — put/get/head/list/copy/delete, presigned GET/PUT, retry, errors by cause; no SDK |
 
 All are storage-agnostic: no database dependency, no ORM types in any public
 signature. `dx-auth` reaches storage through the `AuthUserStore`,
 `AuthEmailSender` and `AuthRateLimitStore` traits, which the host app
-implements. Planned: billing and object storage.
+implements. Planned: billing.
 
 ## Using it
 
@@ -26,6 +27,7 @@ dx-crypto = { git = "https://github.com/hauju/dx-kit.git", tag = "dx-crypto-v0.1
 dx-smtp   = { git = "https://github.com/hauju/dx-kit.git", tag = "dx-smtp-v0.1.0" }
 dx-auth   = { git = "https://github.com/hauju/dx-kit.git", tag = "dx-auth-v0.4.1" }
 dx-umami  = { git = "https://github.com/hauju/dx-kit.git", tag = "dx-umami-v0.1.0" }
+dx-s3     = { git = "https://github.com/hauju/dx-kit.git", tag = "dx-s3-v0.1.0" }
 ```
 
 `dx-auth` has no default features. Enable `server`, `web`, or both — apps
@@ -183,6 +185,33 @@ The login page's hydration-stall notice expects a `.hydration-stall` CSS class
 in the host app's stylesheet — a delayed reveal, since if the bundle never
 arrives there is no Rust running to notice. Without the class the notice simply
 shows immediately; nothing breaks.
+
+### dx-s3
+
+Four app copies were reviewed — seggwat (own SigV4 signer), stepshots and
+dx-blog (`rust-s3`), and the template copy shared by mcpi, dx-admin and
+gaiasana (`rust-s3`, never wired up). None was extracted as-is.
+
+- **Own signer, not `rust-s3`.** The three `rust-s3` copies disable default
+  features to get rustls, which also drops `fail-on-err`: non-2xx responses
+  come back as `Ok`, and each copy compensated inconsistently — the template's
+  `file_exists` was always `true`, `delete` never reported a 403,
+  `verify_connection` passed with wrong keys. `rust-s3` also brings a second
+  `reqwest` major, `attohttpc`, `rust-ini` and `sysinfo`. seggwat's ~250-line
+  signer over the kit's existing `reqwest` + rustls stack won; its SigV4
+  pitfalls (multi-value headers, encoded-form query ordering, non-ASCII header
+  values) are fixed and the S3 API reference's worked examples pin it.
+- **Operation surface from stepshots, URL model from dx-blog.** `NotFound` as a
+  matchable variant, `public_url_base` for CDNs and Contabo's `tenant:bucket`,
+  presigned PUT for direct browser uploads, the path-prefix round-trip
+  invariant — keys are prefixed on the way in and stripped on the way out.
+- **Policy stays in the app.** No 10 MiB cap, no image allow-list, no UUID key
+  generation, no forced `Cache-Control` or `Content-Disposition`; every copy
+  had baked one app's upload rules into the "generic" crate.
+  `content_disposition_inline` / `_attachment` exist because non-ASCII
+  filenames broke signing in two apps.
+- **`exists` returns `Result<bool>`**, never a silent `false` on a network
+  error — stepshots guarded a never-overwrite-the-original path on that.
 
 ## Coming from your own copy?
 

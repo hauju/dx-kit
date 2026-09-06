@@ -1,0 +1,31 @@
+[package]
+name = "dx-s3"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "S3-compatible object storage over reqwest with its own SigV4 signer — put/get/head/list/copy/delete, presigned GET/PUT, retry; no SDK, no second HTTP stack"
+
+[dependencies]
+base64 = { workspace = true }
+bytes = "1"
+hex = "0.4"
+hmac = "0.12"
+md5 = "0.8"
+percent-encoding = "2.3"
+# rustls with the aws-lc-rs provider and the platform verifier — the same
+# build dx-auth and dx-umami use, so an app carries one HTTP stack, not two.
+reqwest = { version = "0.13.1", default-features = false, features = [
+    "rustls",
+] }
+roxmltree = "0.21"
+secrecy = { workspace = true }
+sha2 = "0.10"
+thiserror = { workspace = true }
+tokio = { version = "1", features = ["time"] }
+tracing = { workspace = true }
+url = "2.5"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
