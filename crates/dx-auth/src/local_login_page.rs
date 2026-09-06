@@ -487,8 +487,15 @@ pub fn LocalLoginPage(
             error_msg.set(None);
             email_error.set(None);
             passkey_attempt += 1;
-            crate::webauthn_helpers::abort_conditional_passkey().await;
+            // Leave EmailInput *before* awaiting the abort: the parked task
+            // flips `conditional_running` back to false once it sees the
+            // abort, and the autofill effect would re-arm a fresh ceremony
+            // if the step were still EmailInput at that moment — which the
+            // modal request below then collides with ("A request is already
+            // pending"). Unmounting the button also closes the double-click
+            // window.
             step.set(LoginStep::PasskeyChallenge);
+            crate::webauthn_helpers::abort_conditional_passkey().await;
             let attempt = *passkey_attempt.peek();
             let stale = move || *passkey_attempt.peek() != attempt;
             let outcome: Result<(), String> = async {
