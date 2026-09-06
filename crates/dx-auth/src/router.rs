@@ -134,6 +134,7 @@ pub fn auth_router(auth_config: AuthConfig, auth_state: AuthState) -> Router {
 /// - `POST /auth/session/passkey/conditional/options` — autofill (discoverable) options
 /// - `POST /auth/session/passkey-fallback-otp` — cancelled ceremony falls back to OTP
 /// - `POST /auth/session/captcha/verify` — registration gate, only when configured
+/// - `POST /auth/session/accept-tos` — record the configured terms version (when `tos_version` is set)
 /// - `POST /auth/passkey/enroll/options|verify` — enroll a passkey while logged in
 /// - `POST /auth/logout`
 /// - `POST /auth/dev-login` — debug builds only
@@ -165,6 +166,10 @@ pub fn local_auth_router(auth_config: AuthConfig, auth_state: AuthState) -> Rout
         .route(
             "/auth/session/captcha/verify",
             post(local::verify_captcha_handler),
+        )
+        .route(
+            "/auth/session/accept-tos",
+            post(handlers::accept_tos_handler),
         )
         .route(
             "/auth/passkey/enroll/options",

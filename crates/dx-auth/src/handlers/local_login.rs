@@ -127,6 +127,11 @@ pub struct VerifyResponse {
     /// yet — the client may show the one-time enrollment prompt.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub offer_passkey: Option<bool>,
+    /// `Some(true)` when the session is open but the user must accept the
+    /// current terms before continuing: `redirect_url` is withheld until
+    /// `POST /auth/session/accept-tos` returns it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub needs_tos_acceptance: Option<bool>,
 }
 
 impl VerifyResponse {
@@ -137,16 +142,18 @@ impl VerifyResponse {
             error: Some(msg.into()),
             retry_after_seconds: None,
             offer_passkey: None,
+            needs_tos_acceptance: None,
         }
     }
 
     fn logged_in(result: FinalizeResult) -> Self {
         Self {
             success: true,
-            redirect_url: Some(result.redirect_url),
+            redirect_url: (!result.needs_tos).then_some(result.redirect_url),
             error: None,
             retry_after_seconds: None,
             offer_passkey: result.offer_passkey.then_some(true),
+            needs_tos_acceptance: result.needs_tos.then_some(true),
         }
     }
 }
@@ -601,6 +608,7 @@ pub async fn resend_otp_handler(
         error: None,
         retry_after_seconds: Some(RESEND_COOLDOWN_SECONDS),
         offer_passkey: None,
+        needs_tos_acceptance: None,
     }))
 }
 
@@ -714,6 +722,9 @@ struct FinalizeResult {
     redirect_url: String,
     /// Account has no passkeys — the client may show the enrollment prompt.
     offer_passkey: bool,
+    /// The terms step comes first; `redirect_url` is parked in the session
+    /// for `accept_tos_handler` to hand back.
+    needs_tos: bool,
 }
 
 async fn finalize_login(
@@ -766,9 +777,20 @@ async fn finalize_login(
             .map(|list| list.is_empty())
             .unwrap_or(false);
 
+    let needs_tos = shared::needs_tos_acceptance(auth_config, user);
+    if needs_tos {
+        session
+            .insert(
+                crate::handlers::session_auth::TOS_PENDING_REDIRECT_KEY,
+                &redirect_url,
+            )
+            .await?;
+    }
+
     Ok(FinalizeResult {
         redirect_url,
         offer_passkey,
+        needs_tos,
     })
 }
 

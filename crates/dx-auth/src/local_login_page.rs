@@ -422,6 +422,42 @@ pub fn LocalLoginPage(
         });
     };
 
+    // Terms step: record acceptance, then continue exactly as a login that
+    // needed no terms would have.
+    let mut tos_accepted = use_signal(|| false);
+    let on_tos_accept = move |_| {
+        spawn(async move {
+            #[cfg(feature = "web")]
+            {
+                is_loading.set(true);
+                error_msg.set(None);
+                let result: Result<VerifyResp, String> =
+                    wasm_post_json("/auth/session/accept-tos", None).await;
+                match result {
+                    Ok(resp) if resp.success => {
+                        if let (LoginStep::TosAcceptance { offer_passkey }, Some(url)) =
+                            (step(), resp.redirect_url.clone())
+                        {
+                            route_after_terms(&url, offer_passkey, step, user_refresh, is_loading);
+                        }
+                        is_loading.set(false);
+                    }
+                    Ok(resp) => {
+                        error_msg.set(Some(
+                            resp.error
+                                .unwrap_or_else(|| "Failed to accept terms".to_string()),
+                        ));
+                        is_loading.set(false);
+                    }
+                    Err(e) => {
+                        error_msg.set(Some(e));
+                        is_loading.set(false);
+                    }
+                }
+            }
+        });
+    };
+
     let on_offer_skip = move |_| {
         #[cfg(feature = "web")]
         dismiss_passkey_prompt();
@@ -507,6 +543,7 @@ pub fn LocalLoginPage(
         LoginStep::OfferPasskey { .. } => "offer",
         LoginStep::OtpCodeInput => "otp",
         LoginStep::Verifying => "verifying",
+        LoginStep::TosAcceptance { .. } => "tos",
         LoginStep::Success { .. } => "success",
     };
 
@@ -687,6 +724,52 @@ pub fn LocalLoginPage(
                                 disabled: is_loading(),
                                 "Not now"
                             }
+                        }
+                    }
+                ),
+
+                LoginStep::TosAcceptance { .. } => rsx!(
+                    div { class: "space-y-4",
+                        div { class: "text-center",
+                            h2 { class: "text-lg font-semibold", "Almost there!" }
+                            p { class: "text-sm text-base-content/70 mt-1",
+                                "Please review and accept our terms to continue."
+                            }
+                        }
+                        label { class: "label cursor-pointer justify-start gap-3",
+                            input {
+                                r#type: "checkbox",
+                                class: "checkbox checkbox-primary",
+                                checked: tos_accepted(),
+                                onchange: move |evt: Event<FormData>| {
+                                    tos_accepted.set(evt.checked());
+                                },
+                            }
+                            span { class: "label-text",
+                                "I agree to the "
+                                a {
+                                    href: "/legal/terms",
+                                    target: "_blank",
+                                    class: "link link-primary",
+                                    "Terms of Service"
+                                }
+                                " and "
+                                a {
+                                    href: "/legal/privacy",
+                                    target: "_blank",
+                                    class: "link link-primary",
+                                    "Privacy Policy"
+                                }
+                            }
+                        }
+                        button {
+                            class: "btn btn-primary w-full",
+                            disabled: !tos_accepted() || is_loading(),
+                            onclick: on_tos_accept,
+                            if is_loading() {
+                                span { class: "loading loading-spinner loading-sm" }
+                            }
+                            "Continue"
                         }
                     }
                 ),
@@ -936,6 +1019,12 @@ enum LoginStep {
     },
     OtpCodeInput,
     Verifying,
+    /// Session is open but the current terms are not accepted yet; the
+    /// redirect arrives with the acceptance response. `offer_passkey` is
+    /// carried through so the enrollment prompt can still follow.
+    TosAcceptance {
+        offer_passkey: bool,
+    },
     Success {
         redirect_url: String,
     },
@@ -981,6 +1070,8 @@ struct VerifyResp {
     error: Option<String>,
     #[serde(default)]
     offer_passkey: Option<bool>,
+    #[serde(default)]
+    needs_tos_acceptance: Option<bool>,
 }
 
 /// `/auth/session/passkey/conditional/options` response.
@@ -1088,20 +1179,51 @@ fn reset_captcha_widget() {
 fn proceed_after_login(
     resp: &VerifyResp,
     mut step: Signal<LoginStep>,
+    user_refresh: Signal<UserDataRefreshTrigger>,
+    mut is_loading: Signal<bool>,
+) {
+    if resp.needs_tos_acceptance == Some(true) {
+        step.set(LoginStep::TosAcceptance {
+            offer_passkey: resp.offer_passkey == Some(true),
+        });
+        is_loading.set(false);
+        return;
+    }
+    if let Some(url) = resp.redirect_url.clone() {
+        route_after_terms(
+            &url,
+            resp.offer_passkey == Some(true),
+            step,
+            user_refresh,
+            is_loading,
+        );
+    }
+}
+
+/// The last fork before the redirect: the one-time passkey-enrollment offer
+/// when the server says the account has none (and the device can, and it was
+/// not dismissed before), else straight on.
+#[cfg(feature = "web")]
+fn route_after_terms(
+    url: &str,
+    offer_passkey: bool,
+    mut step: Signal<LoginStep>,
     mut user_refresh: Signal<UserDataRefreshTrigger>,
     mut is_loading: Signal<bool>,
 ) {
-    if let Some(url) = resp.redirect_url.clone() {
-        if resp.offer_passkey == Some(true)
-            && crate::webauthn_helpers::is_webauthn_available()
-            && !passkey_prompt_dismissed()
-        {
-            step.set(LoginStep::OfferPasskey { redirect_url: url });
-            is_loading.set(false);
-        } else {
-            step.set(LoginStep::Success { redirect_url: url });
-            user_refresh.write().0 += 1;
-        }
+    if offer_passkey
+        && crate::webauthn_helpers::is_webauthn_available()
+        && !passkey_prompt_dismissed()
+    {
+        step.set(LoginStep::OfferPasskey {
+            redirect_url: url.to_string(),
+        });
+        is_loading.set(false);
+    } else {
+        step.set(LoginStep::Success {
+            redirect_url: url.to_string(),
+        });
+        user_refresh.write().0 += 1;
     }
 }
 

@@ -45,7 +45,12 @@ name = "dx-auth"
 # crate constant, so an app can roll out new terms (re-prompting everyone whose
 # stored version differs) without a dx-auth release. Breaking: `AuthConfig`
 # gains a required field; `Default` keeps the old "1.0".
-version = "0.9.0"
+# 0.10.0 makes the terms step opt-in and gives it to the local flow too:
+# `tos_version` is now `Option<String>`, `None` (the default) means no
+# acceptance step on either router, `Some` gates both. The local router mounts
+# `POST /auth/session/accept-tos` and `LocalLoginPage` gains the step.
+# Breaking: the field's type; apps that relied on the implicit "1.0" gate set it.
+version = "0.10.0"
 authors.workspace = true
 edition.workspace = true
 license.workspace = true

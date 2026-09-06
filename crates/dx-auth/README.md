@@ -96,7 +96,7 @@ POST /auth/session/password/verify
 POST /auth/session/otp/verify
 POST /auth/session/otp/resend
 POST /auth/session/captcha/verify        new-user registration (bollwark)
-POST /auth/session/accept-tos            records AuthConfig::tos_version
+POST /auth/session/accept-tos            when AuthConfig::tos_version is set
 POST /auth/dev-login                     debug builds only
 GET  /auth/sso/start?next=               SSO mode only, see below
 GET  /auth/callback
@@ -211,6 +211,7 @@ POST /auth/session/passkey/conditional/options  discoverable (autofill) request
 POST /auth/session/passkey-fallback-otp         cancelled ceremony → OTP
 POST /auth/session/captcha/verify               only when CAPTCHA_* is set
 POST /auth/passkey/enroll/options|verify
+POST /auth/session/accept-tos                   when AuthConfig::tos_version is set
 POST /auth/logout
 ```
 

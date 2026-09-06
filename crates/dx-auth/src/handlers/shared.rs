@@ -228,6 +228,19 @@ pub async fn determine_post_login_redirect(
     Ok(redirect)
 }
 
+// ── Terms of service ────────────────────────────────────────────────
+
+/// Whether `user` has to accept the terms before they may continue: the app
+/// requires a version, and the store has not recorded that version as
+/// accepted. With no version configured there is no step at all.
+pub(super) fn needs_tos_acceptance(auth_config: &AuthConfig, user: &AuthUser) -> bool {
+    match (&auth_config.tos_version, &user.tos_acceptance) {
+        (None, _) => false,
+        (Some(_), None) => true,
+        (Some(required), Some(ta)) => ta.latest_version != *required || !ta.accepted,
+    }
+}
+
 // ── Registration gate ───────────────────────────────────────────────
 
 /// Whether a not-yet-registered `email` may create an account.
@@ -593,6 +606,36 @@ mod tests {
             "someone@example.com",
             false
         ));
+    }
+
+    #[test]
+    fn terms_are_required_only_when_a_version_is_configured_and_not_yet_accepted() {
+        use super::needs_tos_acceptance;
+        use crate::types::AuthTosAcceptance;
+
+        let accepted = |version: &str, accepted: bool| AuthUser {
+            tos_acceptance: Some(AuthTosAcceptance {
+                latest_version: version.to_string(),
+                accepted,
+            }),
+            ..victim()
+        };
+        let mut config = AuthConfig::default();
+
+        // No version configured: never a step, whatever is stored.
+        assert!(!needs_tos_acceptance(&config, &victim()));
+
+        config.tos_version = Some("2026-09".to_string());
+        assert!(needs_tos_acceptance(&config, &victim()), "nothing stored");
+        assert!(
+            needs_tos_acceptance(&config, &accepted("1.0", true)),
+            "older version"
+        );
+        assert!(
+            needs_tos_acceptance(&config, &accepted("2026-09", false)),
+            "withdrawn"
+        );
+        assert!(!needs_tos_acceptance(&config, &accepted("2026-09", true)));
     }
 
     #[tokio::test]

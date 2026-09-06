@@ -986,12 +986,7 @@ pub(super) async fn finalize_login(
     session.remove::<bool>(DEFERRED_NEW_USER_KEY).await?;
     session.remove::<u32>(PASSWORD_ATTEMPTS_KEY).await?;
 
-    let needs_tos = match &user.tos_acceptance {
-        Some(ta) => ta.latest_version != auth_config.tos_version || !ta.accepted,
-        None => true,
-    };
-
-    if needs_tos {
+    if crate::handlers::shared::needs_tos_acceptance(auth_config, &user) {
         let redirect_url =
             determine_post_login_redirect(auth_state, auth_config, session, &user).await?;
         session
@@ -1020,13 +1015,18 @@ pub async fn accept_tos_handler(
     session: tower_sessions::Session,
 ) -> AuthResult<Json<VerifyResponse>> {
     let user_data = user_session.data()?;
+    let Some(tos_version) = auth_config.tos_version.clone() else {
+        return Err(AuthError::BadRequest(
+            "Terms acceptance is not enabled".to_string(),
+        ));
+    };
 
     auth_state
         .user_store
         .update_tos_acceptance(
             &user_data.id,
             AuthTosAcceptance {
-                latest_version: auth_config.tos_version.clone(),
+                latest_version: tos_version.clone(),
                 accepted: true,
             },
         )
@@ -1043,7 +1043,7 @@ pub async fn accept_tos_handler(
 
     info!(
         "TOS v{} accepted by user {}, redirecting to {}",
-        auth_config.tos_version, user_data.id, redirect_url
+        tos_version, user_data.id, redirect_url
     );
 
     Ok(Json(VerifyResponse {
