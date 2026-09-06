@@ -52,7 +52,10 @@ name = "dx-auth"
 # Breaking: the field's type; apps that relied on the implicit "1.0" gate set it.
 # 0.10.1 adds `webauthn_helpers::enroll_passkey_named`, so an app's settings page
 # can label a passkey at enrollment; `enroll_passkey` is unchanged. Additive.
-version = "0.10.3"
+# 0.10.4 adds `AuthUserStore::is_invited`, consulted by the registration gate on
+# both flows so an app that invites people can admit an invited address while
+# registration is otherwise closed. Default `false`; additive.
+version = "0.10.4"
 authors.workspace = true
 edition.workspace = true
 license.workspace = true

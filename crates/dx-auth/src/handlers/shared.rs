@@ -251,13 +251,18 @@ pub(super) fn needs_tos_acceptance(auth_config: &AuthConfig, user: &AuthUser) ->
 /// registration is permitted only while no user exists yet (first-run
 /// bootstrap) and refused afterwards, so a fresh deployment is usable without
 /// configuration but does not stay open to the internet. A public product sets
-/// `open_registration` instead, which admits every address.
+/// `open_registration` instead, which admits every address, and an app that
+/// invites people answers [`AuthUserStore::is_invited`] so an invitation is
+/// enough on its own.
 pub(super) async fn registration_allowed(
     auth_state: &AuthState,
     auth_config: &AuthConfig,
     email: &str,
 ) -> AuthResult<bool> {
     if auth_config.open_registration {
+        return Ok(true);
+    }
+    if auth_state.user_store.is_invited(email).await? {
         return Ok(true);
     }
 
@@ -320,6 +325,7 @@ mod tests {
         by_email: Option<AuthUser>,
         sub_updates: Mutex<Vec<(String, String)>>,
         created: Mutex<Vec<NewAuthUser>>,
+        invited: bool,
     }
 
     #[async_trait::async_trait]
@@ -359,6 +365,9 @@ mod tests {
         }
         async fn determine_post_login_redirect(&self, _: &str, d: &str) -> AuthResult<String> {
             Ok(d.to_string())
+        }
+        async fn is_invited(&self, _: &str) -> AuthResult<bool> {
+            Ok(self.invited)
         }
     }
 
@@ -636,6 +645,29 @@ mod tests {
             "withdrawn"
         );
         assert!(!needs_tos_acceptance(&config, &accepted("2026-09", true)));
+    }
+
+    #[tokio::test]
+    async fn an_invited_address_may_register_while_registration_is_closed() {
+        // No allowlist, users exist (the fail-safe default), registration not
+        // open: refused. The same store answering "invited" admits it.
+        let config = AuthConfig::default();
+        let closed = Arc::new(OneUserStore::default());
+        assert!(
+            !registration_allowed(&state(closed), &config, "guest@example.com")
+                .await
+                .unwrap()
+        );
+
+        let invited = Arc::new(OneUserStore {
+            invited: true,
+            ..Default::default()
+        });
+        assert!(
+            registration_allowed(&state(invited), &config, "guest@example.com")
+                .await
+                .unwrap()
+        );
     }
 
     #[tokio::test]

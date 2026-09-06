@@ -218,7 +218,9 @@ POST /auth/logout
 **Registration is closed by default**, exactly as in FerrisKey mode: set
 `allowed_registration_emails` / `allowed_registration_domains`, or leave both
 empty and only the very first account may register (first-run bootstrap).
-`open_registration: true` lifts both for a public sign-up. A verified OTP for
+`open_registration: true` lifts both for a public sign-up, and an app that
+invites people answers `AuthUserStore::is_invited` so an invitation is enough on
+its own. A verified OTP for
 a permitted, unknown address creates the account; `sub` is minted by the crate
 (an opaque random token) and never rewritten afterwards.
 

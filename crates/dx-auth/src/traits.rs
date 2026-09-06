@@ -63,6 +63,16 @@ pub trait AuthUserStore: Send + Sync + 'static {
     async fn has_any_users(&self) -> AuthResult<bool> {
         Ok(true)
     }
+
+    /// Whether the app has invited `email` (already trimmed and lowercased),
+    /// so it may register even while registration is otherwise closed.
+    ///
+    /// Consulted after `open_registration` and before the allowlists, on both
+    /// login flows and again at account creation. The default is `false`:
+    /// an app without invitations keeps its policy exactly as configured.
+    async fn is_invited(&self, _email: &str) -> AuthResult<bool> {
+        Ok(false)
+    }
 }
 
 /// A stored WebAuthn credential, as the login and enrollment handlers need it.
