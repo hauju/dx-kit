@@ -354,8 +354,15 @@ pub(crate) async fn wasm_post_json<R: for<'de> serde::Deserialize<'de>>(
 /// from the server, run the browser ceremony, submit the attestation.
 ///
 /// Returns a user-facing error string on failure (cancelled, unsupported,
-/// rejected by the server).
+/// rejected by the server). The passkey is stored without a name; a settings
+/// page that lets the user label it uses [`enroll_passkey_named`].
 pub async fn enroll_passkey() -> Result<(), String> {
+    enroll_passkey_named(None).await
+}
+
+/// [`enroll_passkey`] with a label for the credential, as shown wherever the
+/// app lists a user's passkeys. The server trims it and keeps 64 characters.
+pub async fn enroll_passkey_named(name: Option<&str>) -> Result<(), String> {
     #[derive(serde::Deserialize)]
     struct OptionsResp {
         options: serde_json::Value,
@@ -370,7 +377,7 @@ pub async fn enroll_passkey() -> Result<(), String> {
     let credential = browser_create_passkey(&opts.options.to_string()).await?;
     let resp: VerifyResp = wasm_post_json(
         "/auth/passkey/enroll/verify",
-        Some(serde_json::json!({ "credential": credential })),
+        Some(serde_json::json!({ "credential": credential, "name": name })),
     )
     .await?;
     if resp.success {
