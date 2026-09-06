@@ -47,7 +47,6 @@ const FERRISKEY_USER_ID_KEY: &str = "ferriskey.user_id";
 const LOGIN_EMAIL_KEY: &str = "login.email";
 
 // TOS acceptance
-pub const TOS_VERSION: &str = "1.0";
 pub(crate) const TOS_PENDING_REDIRECT_KEY: &str = "tos.pending_redirect";
 
 // Deferred user creation: set when a new user starts login but hasn't verified OTP yet.
@@ -988,7 +987,7 @@ pub(super) async fn finalize_login(
     session.remove::<u32>(PASSWORD_ATTEMPTS_KEY).await?;
 
     let needs_tos = match &user.tos_acceptance {
-        Some(ta) => ta.latest_version != TOS_VERSION || !ta.accepted,
+        Some(ta) => ta.latest_version != auth_config.tos_version || !ta.accepted,
         None => true,
     };
 
@@ -1016,6 +1015,7 @@ pub(super) async fn finalize_login(
 
 pub async fn accept_tos_handler(
     Extension(auth_state): Extension<AuthState>,
+    Extension(auth_config): Extension<AuthConfig>,
     user_session: crate::session::UserSession,
     session: tower_sessions::Session,
 ) -> AuthResult<Json<VerifyResponse>> {
@@ -1026,7 +1026,7 @@ pub async fn accept_tos_handler(
         .update_tos_acceptance(
             &user_data.id,
             AuthTosAcceptance {
-                latest_version: TOS_VERSION.to_string(),
+                latest_version: auth_config.tos_version.clone(),
                 accepted: true,
             },
         )
@@ -1043,7 +1043,7 @@ pub async fn accept_tos_handler(
 
     info!(
         "TOS v{} accepted by user {}, redirecting to {}",
-        TOS_VERSION, user_data.id, redirect_url
+        auth_config.tos_version, user_data.id, redirect_url
     );
 
     Ok(Json(VerifyResponse {

@@ -1,3 +1,6 @@
+/// What `AuthConfig::tos_version` defaults to.
+pub const DEFAULT_TOS_VERSION: &str = "1.0";
+
 /// Configuration for auth routes, redirects, and FerrisKey integration.
 ///
 /// Replaces all reads from `AppState.config.*` and `AppState.secrets.*`
@@ -60,6 +63,13 @@ pub struct AuthConfig {
     /// bootstrap rule. Pair it with a captcha (`CAPTCHA_URL` and friends):
     /// with that unset, nothing stands in front of account creation.
     pub open_registration: bool,
+
+    // ── Terms of service ──────────────────────────────────────────
+    /// The terms version a user must have accepted to log in. Compared to
+    /// what the store returns in `AuthUser::tos_acceptance`; a mismatch (or
+    /// nothing stored) sends them through the acceptance step, so bumping
+    /// this re-prompts everyone. Any string works: a date, a semver, a hash.
+    pub tos_version: String,
 }
 
 impl Default for AuthConfig {
@@ -79,6 +89,7 @@ impl Default for AuthConfig {
             allowed_registration_emails: Vec::new(),
             allowed_registration_domains: Vec::new(),
             open_registration: false,
+            tos_version: DEFAULT_TOS_VERSION.to_string(),
         }
     }
 }

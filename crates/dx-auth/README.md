@@ -96,7 +96,7 @@ POST /auth/session/password/verify
 POST /auth/session/otp/verify
 POST /auth/session/otp/resend
 POST /auth/session/captcha/verify        new-user registration (bollwark)
-POST /auth/session/accept-tos
+POST /auth/session/accept-tos            records AuthConfig::tos_version
 POST /auth/dev-login                     debug builds only
 GET  /auth/sso/start?next=               SSO mode only, see below
 GET  /auth/callback
