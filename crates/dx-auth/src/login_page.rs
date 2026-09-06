@@ -4,6 +4,9 @@ use dioxus::prelude::*;
 /// Multi-step login page: OTP-first with auto-passkey detection.
 ///
 /// Flow: Email → Detecting → (PasskeyChallenge | OtpCodeInput) → Verifying → TOS? → Success
+// Several signals are only written from `web`-gated code; on a server-only
+// build they read as needlessly mutable.
+#[cfg_attr(not(feature = "web"), allow(unused_mut, unused_variables))]
 #[component]
 pub fn LoginPage(
     redirect_url: String,
@@ -705,6 +708,7 @@ pub fn LoginPage(
 // ── Login step state machine ────────────────────────────────────────
 
 #[derive(Clone, PartialEq)]
+#[cfg_attr(not(feature = "web"), allow(dead_code))]
 enum LoginStep {
     EmailInput,
     Detecting,

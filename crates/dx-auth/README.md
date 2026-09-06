@@ -264,6 +264,10 @@ fresh quota per request.
 
 **Logout is `POST`,** so a cross-site `<img>` or link can't force it.
 
+**Request bodies are capped at 64 KiB** on both routers. Every auth body is
+small — an email, a code, a captcha token, one WebAuthn credential, an
+id_token — and the passkey paths decode CBOR from unauthenticated callers.
+
 **`/auth/dev-login` is compiled out of release builds** (`#[cfg(debug_assertions)]`)
 *and* additionally requires `DEV_LOGIN=true` at runtime.
 

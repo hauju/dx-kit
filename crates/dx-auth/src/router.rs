@@ -1,6 +1,5 @@
 //! Auth route builder.
 
-#[cfg(feature = "local-login")]
 use axum::extract::DefaultBodyLimit;
 use axum::{
     Extension, Router,
@@ -13,6 +12,12 @@ use crate::handlers;
 use crate::rate_limit::{self, AuthRateLimiter, rate_limit_middleware};
 use crate::session;
 use crate::state::AuthState;
+
+/// Every auth request body is small — an email, a six-digit code, a captcha
+/// token, one WebAuthn credential, or an id_token. This bounds the
+/// attacker-controlled input every handler parses, including the CBOR the
+/// passkey paths decode from unauthenticated callers.
+const AUTH_BODY_LIMIT: usize = 64 * 1024;
 
 /// Builds a Router with all authentication routes.
 ///
@@ -31,6 +36,7 @@ use crate::state::AuthState;
 /// Security middleware included:
 /// - **Rate limiting:** 20 requests/minute per IP (via `governor`)
 /// - **CSRF:** Origin/Referer validation on POST requests against `base_url`
+/// - **Body limit:** 64 KiB
 ///
 /// `AuthConfig` and `AuthState` are added as `Extension`s for handler access.
 pub fn auth_router(auth_config: AuthConfig, auth_state: AuthState) -> Router {
@@ -109,17 +115,12 @@ pub fn auth_router(auth_config: AuthConfig, auth_state: AuthState) -> Router {
         .layer(Extension(rate_limiter))
         // 1st: CSRF — validate Origin/Referer on POST requests.
         .layer(axum::middleware::from_fn(csrf_origin_check))
+        // Bound every body before a handler touches it.
+        .layer(DefaultBodyLimit::max(AUTH_BODY_LIMIT))
         // AuthConfig and AuthState available to all handlers via Extension
         .layer(Extension(auth_config))
         .layer(Extension(auth_state))
 }
-
-/// Every auth request body is small — an email, a six-digit code, or one
-/// WebAuthn credential. This bounds the attacker-controlled CBOR that the
-/// enrollment path decodes, which is the only place we parse a nested binary
-/// format from an unauthenticated caller.
-#[cfg(feature = "local-login")]
-const AUTH_BODY_LIMIT: usize = 64 * 1024;
 
 /// Builds a Router for the self-owned login flow — no identity provider, no
 /// passwords. Mount this *instead of* [`auth_router`]: both own the same
@@ -137,7 +138,7 @@ const AUTH_BODY_LIMIT: usize = 64 * 1024;
 /// - `POST /auth/logout`
 /// - `POST /auth/dev-login` — debug builds only
 ///
-/// Security middleware is the same as [`auth_router`] plus a 64 KiB body limit.
+/// Security middleware is the same as [`auth_router`].
 #[cfg(feature = "local-login")]
 pub fn local_auth_router(auth_config: AuthConfig, auth_state: AuthState) -> Router {
     use handlers::local_login as local;

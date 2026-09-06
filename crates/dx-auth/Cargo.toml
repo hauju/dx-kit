@@ -34,7 +34,10 @@ name = "dx-auth"
 # the OTP core (attempt cap under the session lock, recipient binding, captcha)
 # is now shared with the FerrisKey flow. Additive: with the feature off nothing
 # changes. With it on, `AuthUserStore` gains a required `get_user_by_id`.
-version = "0.7.0"
+# 0.7.1 bounds every auth request body at 64 KiB on the FerrisKey router too
+# (the local router already did), and quiets the server-only build warnings
+# in `LoginPage`. No API change.
+version = "0.7.1"
 authors.workspace = true
 edition.workspace = true
 license.workspace = true
